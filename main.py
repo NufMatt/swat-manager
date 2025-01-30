@@ -23,6 +23,8 @@ CADET_NOTES_CHANNEL   = 1334493243018182699
 TRAINEE_ROLE = 1321853549273157642
 CADET_ROLE   = 1321853586384093235
 SWAT_ROLE_ID = 1321163290948145212
+RECRUITER_ID = 1334600500448067707
+LEADERSHIP_ID = 1300539048225673226
 
 TARGET_CHANNEL_ID      = 1334474489236557896  # Channel for main embed
 REQUESTS_CHANNEL_ID    = 1334474601668804638  # Where requests are posted
@@ -43,6 +45,8 @@ def initialize_database():
             embed_id TEXT NOT NULL,
             ingame_name TEXT NOT NULL,
             user_id TEXT NOT NULL,
+            region TEXT NOT NULL,
+            reminder_sent INTEGER DEFAULT 0,
             role_type TEXT NOT NULL CHECK(role_type IN ('trainee', 'cadet'))
         )
     """)
@@ -52,7 +56,7 @@ def initialize_database():
 initialize_database()
 
 def add_entry(thread_id: str, recruiter_id: str, starttime: datetime, endtime: datetime, 
-              role_type: str, embed_id: str, ingame_name: str, user_id: str) -> bool:
+              role_type: str, embed_id: str, ingame_name: str, user_id: str, region: str) -> bool:
     """Add a new entry to the database."""
     if role_type not in ("trainee", "cadet"):
         raise ValueError("role_type must be either 'trainee' or 'cadet'.")
@@ -64,9 +68,9 @@ def add_entry(thread_id: str, recruiter_id: str, starttime: datetime, endtime: d
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
         cursor.execute(
-            """INSERT INTO entries (thread_id, recruiter_id, starttime, endtime, role_type, embed_id, ingame_name, user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (thread_id, recruiter_id, start_str, end_str, role_type, embed_id, ingame_name, user_id)
+            """INSERT INTO entries (thread_id, recruiter_id, starttime, endtime, role_type, embed_id, ingame_name, user_id, region)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (thread_id, recruiter_id, start_str, end_str, role_type, embed_id, ingame_name, user_id, region)
         )
         conn.commit()
         return True
@@ -100,7 +104,7 @@ def get_entry(thread_id: str) -> Optional[Dict]:
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
     cursor.execute(
-        """SELECT recruiter_id, starttime, endtime, role_type, embed_id, ingame_name, user_id
+        """SELECT recruiter_id, starttime, endtime, role_type, embed_id, ingame_name, user_id, region
            FROM entries
            WHERE thread_id = ?""",
         (thread_id,)
@@ -117,9 +121,34 @@ def get_entry(thread_id: str) -> Optional[Dict]:
             "role_type": row[3],
             "embed_id": row[4],
             "ingame_name": row[5],
-            "user_id": row[6]
+            "user_id": row[6],
+            "region": row[7]
         }
     return None
+
+def is_user_in_database(user_id: int) -> bool:
+    try:
+        # Connect to the SQLite database
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        
+        # Execute the query to check for the user and role
+        cursor.execute("""
+            SELECT 1 FROM entries 
+            WHERE user_id = ?
+            LIMIT 1
+        """, (str(user_id)))
+        
+        # Fetch one record
+        result = cursor.fetchone()
+        
+        return result is not None
+    except sqlite3.Error as e:
+        print(f"Database error: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
 
 # --------------------------------------
 #            BOT SETUP
@@ -177,6 +206,30 @@ def create_embed() -> discord.Embed:
         color=discord.Color.blue()
     )
 
+async def update_recruiters():
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        print("Guild not found.")
+        return
+
+    recruiter_role = guild.get_role(RECRUITER_ID)
+    if not recruiter_role:
+        print("Recruiter role not found.")
+        return
+
+    recruiters = []
+    for member in guild.members:
+        if recruiter_role in member.roles:
+            recruiters.append({
+                "name": member.display_name,
+                "id": member.id
+            })
+
+    # Update the global RECRUITERS list
+    global RECRUITERS
+    RECRUITERS = recruiters
+    print("Updated recruiters list:", RECRUITERS)
+
 async def set_user_nickname(member: discord.Member, role_label: str):
     """Remove any trailing [TRAINEE/Cadet/SWAT] bracketed text and set the new bracket."""
     base_nick = member.nick if member.nick else member.name
@@ -188,7 +241,6 @@ async def close_thread(interaction: discord.Interaction, thread: discord.Thread)
     try:
         if remove_entry(thread.id):
             await thread.edit(locked=True, archived=True)
-            await interaction.followup.send("Thread has been locked and closed!", ephemeral=True)
         else:
             await interaction.followup.send("Not a registered voting thread!", ephemeral=True)
     except discord.Forbidden:
@@ -196,7 +248,7 @@ async def close_thread(interaction: discord.Interaction, thread: discord.Thread)
     except discord.HTTPException as e:
         await interaction.followup.send(f"An error occurred: {e}", ephemeral=True)
 
-async def create_voting_embed(start_time, end_time, recruiter: int, extended: bool = False) -> discord.Embed:
+async def create_voting_embed(start_time, end_time, recruiter: int, region, ingame_name, extended: bool = False) -> discord.Embed:
     """Create the standard voting embed with plus/minus/uncertain reactions."""
     if not isinstance(start_time, datetime):
         start_time = datetime.strptime(str(start_time), "%Y-%m-%d %H:%M:%S.%f")
@@ -210,6 +262,12 @@ async def create_voting_embed(start_time, end_time, recruiter: int, extended: bo
         ),
         color=0x000000
     )
+    flags = {"EU": "🇪🇺 ", "NA": "🇺🇸 ", "SEA": "🇸🇬 "}
+    region_name = region[:-1] if region[-1].isdigit() else region
+    title = f"{flags.get(region_name, '')}{region}"
+    embed.add_field(name="InGame Name:", value=ingame_name, inline=True)
+    embed.add_field(name="Region:", value=title, inline=True)
+    embed.add_field(name="", value="", inline=False)
     embed.add_field(name="Voting started:", value=create_discord_timestamp(start_time), inline=True)
     end_title = "Voting will end: (Extended)" if extended else "Voting will end:"
     embed.add_field(name=end_title, value=create_discord_timestamp(end_time), inline=True)
@@ -263,13 +321,14 @@ class TraineeView(discord.ui.View):
 
 class RequestActionView(discord.ui.View):
     """View with Accept/Ignore buttons for new request embed."""
-    def __init__(self, user_id: int, request_type: str, ingame_name: str = None, accepted_by: str = None, new_name: str = None):
+    def __init__(self, user_id: int, request_type: str, ingame_name: str = None, recruiter: str = None, new_name: str = None, region: str = None):
         super().__init__(timeout=None)
         self.user_id     = user_id
         self.request_type= request_type
         self.ingame_name = ingame_name
-        self.accepted_by = accepted_by
         self.new_name    = new_name
+        self.recruiter   = recruiter
+        self.region      = region
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="request_accept")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -287,6 +346,12 @@ class RequestActionView(discord.ui.View):
         # If it's a trainee request:
         if self.request_type == "trainee_role":
             guild = bot.get_guild(GUILD_ID)
+            if is_user_in_database(self.user_id):
+                await interaction.response.send_message(
+                    "There is already a user with this id in the database.",
+                    ephemeral=True
+                )
+                return
             if guild:
                 member = guild.get_member(self.user_id)
                 if member:
@@ -297,7 +362,8 @@ class RequestActionView(discord.ui.View):
                     channel = guild.get_channel(TRAINEE_NOTES_CHANNEL)
                     if channel:
                         start_time = get_rounded_time()
-                        end_time   = start_time + timedelta(days=7)
+                        # end_time   = start_time + timedelta(days=7)
+                        end_time   = start_time + timedelta(minutes=1)
                         thread_name= f"{self.ingame_name} | TRAINEE Notes"
                         thread = await channel.create_thread(
                             name=thread_name,
@@ -306,7 +372,7 @@ class RequestActionView(discord.ui.View):
                             reason="New Trainee accepted",
                             invitable=False
                         )
-                        voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id)
+                        voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id, self.region, self.ingame_name)
                         embed_msg = await thread.send(embed=voting_embed)
                         await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
                         await embed_msg.add_reaction("❔")
@@ -320,7 +386,8 @@ class RequestActionView(discord.ui.View):
                             role_type="trainee",
                             embed_id=str(embed_msg.id),
                             ingame_name=self.ingame_name,
-                            user_id=str(self.user_id)
+                            user_id=str(self.user_id), 
+                            region=str(self.region)
                         )
 
         # If it's a name change request:
@@ -328,19 +395,42 @@ class RequestActionView(discord.ui.View):
             guild = bot.get_guild(GUILD_ID)
             if guild:
                 member = guild.get_member(self.user_id)
+                leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+                if leadership_role not in interaction.user.roles:
+                    await interaction.response.send_message("You do not have permission to use this embed.", ephemeral=True)
+                    return
+    
                 if member:
                     base_nick = member.nick if member.nick else member.name
-                    # Remove old bracket if any
-                    old_nick_cleaned = re.sub(r'(?:\s*\[(?:CADET|TRAINEE|SWAT)\])+$', '', base_nick, flags=re.IGNORECASE)
-                    # Keep bracket suffix if user had one
+                    
+                    # Remove any role tag from the new name (if present)
+                    new_name_cleaned = re.sub(r'(?:\s*\[(?:CADET|TRAINEE|SWAT)\])+$', '', str(self.new_name), flags=re.IGNORECASE)
+                    
+                    # Keep bracket suffix if user had one in the original nickname
                     suffix_match = re.search(r'\[(CADET|TRAINEE|SWAT)\]', base_nick, flags=re.IGNORECASE)
                     suffix = suffix_match.group(0) if suffix_match else ""
-                    await member.edit(nick=self.new_name + (" " + suffix if suffix else ""))
-
+                    changing_name = new_name_cleaned + (" " + suffix if suffix else "")
+                try:
+                    await member.edit(nick=changing_name)
+                except Exception as e:
+                    await interaction.response.send_message(f"Error occurred while updating the nickname: {e}", ephemeral=True)
+                    return
+                        
         await interaction.message.edit(embed=embed, view=None)
 
     @discord.ui.button(label="Ignore", style=discord.ButtonStyle.danger, custom_id="request_ignore")
     async def ignore_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.request_type == "name_change" or self.request_type == "other":
+            leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+            if leadership_role not in interaction.user.roles:
+                await interaction.response.send_message("You do not have permission to use this embed.", ephemeral=True)
+                return
+        else:
+            recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+            if recruiter_role not in interaction.user.roles:
+                await interaction.response.send_message("You do not have permission to use this embed.", ephemeral=True)
+                return
+            
         embed = interaction.message.embeds[0]
         embed.color = discord.Color.red()
         embed.title += " (Ignored)"
@@ -355,6 +445,53 @@ class RequestActionView(discord.ui.View):
 # --------------------------------------
 #            MODAL CLASSES
 # --------------------------------------
+async def finalize_trainee_request(interaction: discord.Interaction, user_id_str: str):
+    """Finalize the trainee request after selections."""
+    request = pending_requests.get(user_id_str)
+    if not request:
+        await interaction.followup.send("No pending request found to finalize.", ephemeral=True)
+        return
+    
+    recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+    if recruiter_role not in interaction.user.roles:
+        await interaction.response.send_message("You do not have permission to use this embed.", ephemeral=True)
+        return
+    
+    region = request.get("region")
+    recruiter_name = request.get("selected_recruiter_name")
+    recruiter_id = request.get("selected_recruiter_id")  # Access the recruiter's ID
+    
+    if not region or not recruiter_name or not recruiter_id:
+        await interaction.followup.send("Please complete all selections.", ephemeral=True)
+        return
+    
+    # Proceed to create the request embed with all data
+    guild = bot.get_guild(GUILD_ID)
+    if guild:
+        channel = guild.get_channel(REQUESTS_CHANNEL_ID)
+        if channel:
+            embed = discord.Embed(
+                title="New Trainee Role Request:",
+                description=f"User <@{interaction.user.id}> has requested a trainee role!",
+                color=0x0080c0
+            )
+            embed.add_field(name="In-Game Name:", value=f"```{request['ingame_name']}```", inline=True)
+            embed.add_field(name="Accepted By:", value=f"```{recruiter_name}```", inline=True)  # Use recruiter's ID and name
+            embed.add_field(name="Region:", value=f"```{region}```", inline=True)
+    
+            view = RequestActionView(
+                user_id=interaction.user.id,
+                request_type="trainee_role",
+                ingame_name=request['ingame_name'],
+                region=region,
+                recruiter=recruiter_name  # Pass the recruiter's name (or ID if needed)
+            )
+            await channel.send(f"<@{recruiter_id}>")
+            await channel.send(embed=embed, view=view)
+    
+    # Optionally, notify the user
+    await interaction.followup.send("Your trainee role request has been submitted!", ephemeral=True)
+
 # Define your list of recruiters
 RECRUITERS = ["Bain", "Arcadia", "Happy"]  # Replace with actual recruiter names or IDs
 
@@ -366,7 +503,7 @@ class RegionSelect(discord.ui.Select):
             discord.SelectOption(label="SEA", description="Southeast Asia"),
         ]
         super().__init__(
-            placeholder="Select your region...",
+            placeholder="Select what region you play the most!",
             min_values=1,
             max_values=1,
             options=options
@@ -385,12 +522,13 @@ class RegionSelect(discord.ui.Select):
             await interaction.response.send_message("No pending request found.", ephemeral=True)
 
 class RecruiterSelect(discord.ui.Select):
-    def __init__(self, recruiters: list):
+    def __init__(self):
         options = [
-            discord.SelectOption(label=rec, description=f"Recruiter: {rec}") for rec in recruiters
+            discord.SelectOption(label=rec["name"], description=f"Recruiter: {rec['name']}", value=str(rec["id"]))
+            for rec in RECRUITERS
         ]
         super().__init__(
-            placeholder="Select your recruiter...",
+            placeholder="Select the person which accepted you...",
             min_values=1,
             max_values=1,
             options=options
@@ -398,62 +536,55 @@ class RecruiterSelect(discord.ui.Select):
     
     async def callback(self, interaction: discord.Interaction):
         user_id_str = str(self.view.user_id)
-        selected_recruiter = self.values[0]
+        selected_recruiter_id = self.values[0]
         
-        # Update the pending request with the selected recruiter
-        if user_id_str in pending_requests:
-            pending_requests[user_id_str]["selected_recruiter"] = selected_recruiter
-            save_requests()
-            await interaction.response.send_message(f"Recruiter selected: {selected_recruiter}", ephemeral=True)
-            
-            # Optionally, finalize the request here or wait for both selections
-            # For simplicity, we'll finalize after recruiter selection
-            await finalize_trainee_request(interaction, user_id_str)
+        # Find the selected recruiter's name and ID
+        selected_recruiter = next((rec for rec in RECRUITERS if str(rec["id"]) == selected_recruiter_id), None)
+        
+        if selected_recruiter:
+            # Update the pending request with the selected recruiter's name and ID
+            if user_id_str in pending_requests:
+                pending_requests[user_id_str]["selected_recruiter_name"] = selected_recruiter["name"]
+                pending_requests[user_id_str]["selected_recruiter_id"] = selected_recruiter["id"]
+                save_requests()
+                await interaction.response.send_message(f"Recruiter selected: {selected_recruiter['name']}", ephemeral=True)
+                
+                # Finalize the request after recruiter selection
+                await finalize_trainee_request(interaction, user_id_str)
+            else:
+                await interaction.response.send_message("No pending request found.", ephemeral=True)
         else:
-            await interaction.response.send_message("No pending request found.", ephemeral=True)
+            await interaction.response.send_message("Selected recruiter not found.", ephemeral=True)
 
 class TraineeDropdownView(discord.ui.View):
     def __init__(self, user_id: int):
         super().__init__(timeout=None)
         self.user_id = user_id
         self.add_item(RegionSelect())
-        self.add_item(RecruiterSelect(RECRUITERS))
+        self.add_item(RecruiterSelect())
 
 class TraineeRoleModal(discord.ui.Modal, title="Request Trainee Role"):
     ingame_name = discord.ui.TextInput(label="In-Game Name", placeholder="Enter your in-game name")
-    accepted_by = discord.ui.TextInput(label="Accepted By", placeholder="Name of the person who accepted you")
-
+    
     async def on_submit(self, interaction: discord.Interaction):
         user_id_str = str(interaction.user.id)
+        
+        # Store initial modal data
         pending_requests[user_id_str] = {
             "request_type": "trainee_role",
-            "ingame_name": self.ingame_name.value,
-            "accepted_by": self.accepted_by.value
+            "ingame_name": self.ingame_name.value
+            # 'region' and 'selected_recruiter' will be added after dropdown selection
         }
         save_requests()
-
-        guild = bot.get_guild(GUILD_ID)
-        if guild:
-            channel = guild.get_channel(REQUESTS_CHANNEL_ID)
-            if channel:
-                embed = discord.Embed(
-                    title="New Trainee Role Request:",
-                    description=f"User <@{interaction.user.id}> has requested a trainee role!",
-                    color=0x0080c0
-                )
-                embed.add_field(name="In-Game Name:", value=f"```{self.ingame_name.value}```", inline=True)
-                embed.add_field(name="Accepted By:", value=f"```{self.accepted_by.value}```", inline=True)
-
-                view = RequestActionView(
-                    user_id=interaction.user.id,
-                    request_type="trainee_role",
-                    ingame_name=self.ingame_name.value,
-                    accepted_by=self.accepted_by.value
-                )
-                await channel.send(embed=embed, view=view)
-
-        await interaction.response.send_message("Submitting successful!", ephemeral=True)
-
+    
+        # Send the dropdown view
+        view = TraineeDropdownView(user_id=interaction.user.id)
+        await interaction.response.send_message(
+            "Please select your **Region** and **Recruiter** below:",
+            view=view,
+            ephemeral=True
+        )
+        
 class NameChangeModal(discord.ui.Modal, title="Request Name Change"):
     new_name = discord.ui.TextInput(label="New Name", placeholder="Enter your new name")
 
@@ -469,12 +600,18 @@ class NameChangeModal(discord.ui.Modal, title="Request Name Change"):
         if guild:
             channel = guild.get_channel(REQUESTS_CHANNEL_ID)
             if channel:
+                base_nick = interaction.user.nick if interaction.user.nick else interaction.user.name
+                new_name_cleaned = re.sub(r'(?:\s*\[(?:CADET|TRAINEE|SWAT)\])+$', '', self.new_name.value, flags=re.IGNORECASE)
+                suffix_match = re.search(r'\[(CADET|TRAINEE|SWAT)\]', base_nick, flags=re.IGNORECASE)
+                suffix = suffix_match.group(0) if suffix_match else ""
+                new_name = new_name_cleaned + (" " + suffix if suffix else "")
+            
                 embed = discord.Embed(
                     title="New Name Change Request:",
                     description=f"User <@{interaction.user.id}> has requested a name change!",
                     colour=0x298ecb
                 )
-                embed.add_field(name="New Name:", value=f"```{self.new_name.value}```", inline=True)
+                embed.add_field(name="New Name:", value=f"```{new_name}```", inline=True)
 
                 view = RequestActionView(
                     user_id=interaction.user.id,
@@ -541,6 +678,8 @@ async def on_ready():
             embed_message_id = None
 
     check_embed.start()  # Start the periodic check task
+    update_recruiters_task.start()
+    check_expired_endtimes.start()
 
     channel = bot.get_channel(TARGET_CHANNEL_ID)
     if channel:
@@ -590,18 +729,128 @@ async def check_embed():
         except discord.HTTPException as e:
             print(f"Failed to fetch message: {e}")
 
+@tasks.loop(minutes=10)
+async def update_recruiters_task():
+    await update_recruiters()
+
+@tasks.loop(minutes=1)
+async def check_expired_endtimes():
+    # Connect to the SQLite database
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    
+    # Get the current UTC time in ISO format
+    now = datetime.now()
+    
+    # Query for entries where endtime has passed and reminder_sent is False
+    cursor.execute("""
+        SELECT thread_id, recruiter_id, starttime, role_type , region, ingame_name
+        FROM entries 
+        WHERE endtime <= ? AND reminder_sent = 0
+    """, (now,))
+    
+    expired_entries = cursor.fetchall()
+    
+    for thread_id, recruiter_id, starttime, role_type, region, ingame_name in expired_entries:
+        # Fetch the thread object
+        thread = bot.get_channel(int(thread_id))
+        
+        if thread and isinstance(thread, discord.Thread):
+            # Calculate the number of days since the thread was opened
+            start_time = datetime.strptime(starttime, "%Y-%m-%d %H:%M:%S.%f")
+            days_open = (now - start_time).days
+            
+            # Create the embed
+            embed = discord.Embed(
+                description=f"**Reminder:** This thread has been open for **{days_open} days**.",
+                color=0xff8040
+            )
+            
+            # For trainee threads, ping the recruiter
+            if role_type == "trainee":
+                recruiter = bot.get_user(int(recruiter_id))
+                if recruiter:
+                    await thread.send(f"<@{recruiter_id}>", embed=embed)
+                else:
+                    await thread.send(embed=embed)
+            
+            # For cadet threads, just send the embed
+            elif role_type == "cadet":
+                if not isinstance(start_time, datetime):
+                    start_time = datetime.strptime(str(start_time), "%Y-%m-%d %H:%M:%S.%f")
+
+                voting_embed = discord.Embed(
+                    description=(
+                        "SWAT, please express your vote below.\n"
+                        "Use <:plus_one:1334498534187208714>, ❔, or <:minus_one:1334498485390544989> accordingly."
+                    ),
+                    color=0x000000
+                )
+                flags = {"EU": "🇪🇺 ", "NA": "🇺🇸 ", "SEA": "🇸🇬 "}
+                region_name = region[:-1] if region[-1].isdigit() else region
+                title = f"{flags.get(region_name, '')}{region}"
+                voting_embed.add_field(name="InGame Name:", value=ingame_name, inline=True)
+                voting_embed.add_field(name="Region:", value=title, inline=True)
+                voting_embed.add_field(name="", value="", inline=False)
+                voting_embed.add_field(name="Voting started:", value=create_discord_timestamp(start_time), inline=True)
+                voting_embed.add_field(name="Voting has ended!", value="", inline=True)
+                voting_embed.add_field(name="Thread managed by:", value=f"<@{recruiter_id}>", inline=False)
+                await thread.send("<@" + str(SWAT_ROLE_ID) + ">  It's time for another cadet voting!⌛")
+                embed_msg = await thread.send(embed=voting_embed)
+                await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
+                await embed_msg.add_reaction("❔")
+                await embed_msg.add_reaction("<:minus_one:1334498485390544989>")
+
+            
+            # Mark the reminder as sent in the database
+            cursor.execute("""
+                UPDATE entries 
+                SET reminder_sent = 1 
+                WHERE thread_id = ?
+            """, (thread_id,))
+            conn.commit()
+        else:
+            print(f"Thread with ID {thread_id} not found or is not a thread.")
+    
+    conn.close()
+
 # --------------------------------------
 #     STAFF / MANAGEMENT COMMANDS
 # --------------------------------------
-@app_commands.describe(user_id="User's Discord ID", ingame_name="Exact in-game name")
+# Command to add a trainee
+@app_commands.describe(
+    user_id="User's Discord ID",
+    ingame_name="Exact in-game name",
+    region="Region of the user (NA, EU, or SEA)"
+)
+@app_commands.choices(region=[
+    app_commands.Choice(name="NA", value="NA"),
+    app_commands.Choice(name="EU", value="EU"),
+    app_commands.Choice(name="SEA", value="SEA")
+])
 @bot.tree.command(name="add_trainee", description="Manually add a user as a trainee")
-async def add_trainee_command(interaction: discord.Interaction, user_id: int, ingame_name: str):
+async def add_trainee_command(interaction: discord.Interaction, user_id: str, ingame_name: str, region: app_commands.Choice[str]):
     """Forcibly add a user as trainee and create a voting thread."""
+    # Check if the user has the recruiter role
+    user_id = int(user_id)
+    recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+    if recruiter_role not in interaction.user.roles:
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+        return
+
+    if is_user_in_database(user_id):
+        await interaction.response.send_message(
+            "This trainee is already in the database.",
+            ephemeral=True
+        )
+        return
+
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         await interaction.response.send_message("Guild not found.", ephemeral=True)
         return
     
+
     member = guild.get_member(user_id)
     if not member:
         await interaction.response.send_message("User not found in guild!", ephemeral=True)
@@ -616,8 +865,8 @@ async def add_trainee_command(interaction: discord.Interaction, user_id: int, in
     channel = guild.get_channel(TRAINEE_NOTES_CHANNEL)
     if channel:
         start_time = get_rounded_time()
-        end_time   = start_time + timedelta(days=7)
-        thread_name= f"{ingame_name} | TRAINEE Notes"
+        end_time = start_time + timedelta(days=7)  # Or use timedelta(minutes=1) for testing
+        thread_name = f"{ingame_name} | TRAINEE Notes"
         thread = await channel.create_thread(
             name=thread_name,
             message=None,
@@ -625,7 +874,7 @@ async def add_trainee_command(interaction: discord.Interaction, user_id: int, in
             reason="New Trainee accepted",
             invitable=False
         )
-        voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id)
+        voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id, region.value, ingame_name)
         embed_msg = await thread.send(embed=voting_embed)
         await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
         await embed_msg.add_reaction("❔")
@@ -639,8 +888,10 @@ async def add_trainee_command(interaction: discord.Interaction, user_id: int, in
             role_type="trainee",
             embed_id=str(embed_msg.id),
             ingame_name=ingame_name,
-            user_id=str(user_id)
+            user_id=str(user_id),
+            region=region.value
         )
+        await member.send("")
         await interaction.followup.send("Trainee added successfully!", ephemeral=True)
     else:
         await interaction.followup.send("Cannot find the trainee notes channel.", ephemeral=True)
@@ -668,20 +919,61 @@ async def votinginfo_command(interaction: discord.Interaction):
     embed.add_field(name="Embed ID",   value=str(data["embed_id"]),  inline=False)
     embed.add_field(name="InGame Name",value=data["ingame_name"],    inline=False)
     embed.add_field(name="User ID",    value=f"<@{data['user_id']}>",inline=False)
+    embed.add_field(name="Region",    value=data['region'],inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="lock", description="Lock and archive the current thread!")
+@bot.tree.command(name="remove", description="Removes them from trainee / cadet programm and closes thread!")
 async def lock_thread_command(interaction: discord.Interaction):
     """Close the thread if it's a valid voting thread."""
+    recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+    if recruiter_role not in interaction.user.roles:
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+        return
+
     if not isinstance(interaction.channel, discord.Thread):
         await interaction.response.send_message("This is not a thread.", ephemeral=True)
         return
-    await interaction.response.defer(ephemeral=True)
+
+    data = get_entry(interaction.channel.id)
+    if not data:
+        await interaction.response.send_message("No DB entry for this thread!", ephemeral=True)
+        return
+    
+    await interaction.response.defer()
     await close_thread(interaction, interaction.channel)
+
+    guild = bot.get_guild(GUILD_ID)
+    if not guild:
+        return
+
+    member = guild.get_member(int(data["user_id"]))
+    if not member:
+        await interaction.followup.send("User not found in guild!", ephemeral=True)
+        return
+    
+    temp_name = re.sub(r'(?:\s*\[(?:CADET|TRAINEE|SWAT)\])+$', '', member.nick, flags=re.IGNORECASE)
+    await member.edit(nick=temp_name)
+    t_role = guild.get_role(TRAINEE_ROLE)
+    c_role = guild.get_role(CADET_ROLE)
+    if t_role in member.roles:
+        await member.remove_roles(t_role)
+    elif c_role in member.roles:
+        await member.remove_roles(c_role)
+    
+    embed = discord.Embed(title="❌ Removed",
+                    description=str(data["ingame_name"]) + " has been removed!",
+                    colour=0x950004)
+    embed.set_footer(text="🔒This thread is locked now!")
+    await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="promote", description="Promote the user in the current voting thread (Trainee->Cadet or Cadet->SWAT).")
 async def promote_user_command(interaction: discord.Interaction):
     """Promote a user from Trainee->Cadet or Cadet->SWAT, closing the old thread and creating a new one if needed."""
+    recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+    if recruiter_role not in interaction.user.roles:
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+        return
+
     if not isinstance(interaction.channel, discord.Thread):
         await interaction.response.send_message("This command must be used in a thread.", ephemeral=True)
         return
@@ -733,7 +1025,8 @@ async def promote_user_command(interaction: discord.Interaction):
         channel_obj = guild.get_channel(CADET_NOTES_CHANNEL)
         if channel_obj:
             start_time = get_rounded_time()
-            end_time   = start_time + timedelta(days=7)
+            # end_time   = start_time + timedelta(days=7)
+            end_time   = start_time + timedelta(minutes=1)
             thread = await channel_obj.create_thread(
                 name=f"{ingame_name} | CADET Notes",
                 message=None,
@@ -741,7 +1034,7 @@ async def promote_user_command(interaction: discord.Interaction):
                 reason="Promoted to cadet!",
                 invitable=False
             )
-            voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id)
+            voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id, data["region"], ingame_name)
             embed_msg = await thread.send(embed=voting_embed)
             await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
             await embed_msg.add_reaction("❔")
@@ -755,7 +1048,8 @@ async def promote_user_command(interaction: discord.Interaction):
                 role_type="cadet",
                 embed_id=str(embed_msg.id),
                 ingame_name=ingame_name,
-                user_id=data["user_id"]
+                user_id=data["user_id"],
+                region=data["region"]
             )
 
     elif old_role_type == "cadet":
@@ -771,6 +1065,11 @@ async def promote_user_command(interaction: discord.Interaction):
 @app_commands.describe(days="How many days to extend?")
 async def extend_thread_command(interaction: discord.Interaction, days: int):
     """Extend the voting period for the currently open thread."""
+    recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+    if recruiter_role not in interaction.user.roles:
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+        return
+
     if not isinstance(interaction.channel, discord.Thread):
         await interaction.response.send_message("Use this in a thread channel.", ephemeral=True)
         return
@@ -788,7 +1087,7 @@ async def extend_thread_command(interaction: discord.Interaction, days: int):
     new_end = old_end + timedelta(days=days)
     if update_endtime(interaction.channel.id, new_end):
         msg = await interaction.channel.fetch_message(int(data["embed_id"]))
-        new_embed = await create_voting_embed(data["starttime"], new_end, int(data["recruiter_id"]), extended=True)
+        new_embed = await create_voting_embed(data["starttime"], new_end, int(data["recruiter_id"]), data["region"], data["ingame_name"], extended=True)
         await msg.edit(embed=new_embed)
 
         embed = discord.Embed(
