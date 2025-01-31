@@ -14,8 +14,8 @@ To add the **[SWAT]** tag to your name, follow these steps:
 - Restart FiveM, and you're all set!  
 
 🔹 **If you DON'T have Gold Membership:**  
-- Open a **[support ticket](https://discord.com/channels/738534756538384499/814776227537747970)**  
-- Request a name change and tag a **[SWAT] Recruiter** for approval  
+- Open a **[support ticket](https://discord.com/channels/738534756538384499/814776227537747970)**  on the CnR Discord!
+- Request a name change and tag a **[SWAT] Leadership** for approval  
 - Once approved, **CNR Staff** will make the adjustment for you  
 
 ---

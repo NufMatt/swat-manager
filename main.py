@@ -316,7 +316,7 @@ async def update_recruiters():
     except Exception as e:
         print(f"❌ Error in update_recruiters: {e}")
 
-async def set_user_nickname(member: discord.Member, role_label: str):
+async def set_user_nickname(member: discord.Member, role_label: str, username: str):
     """Remove any trailing [TRAINEE/Cadet/SWAT] bracketed text and set the new bracket."""
     try:
         base_nick = member.nick if member.nick else member.name
@@ -665,7 +665,7 @@ class CloseThreadView(discord.ui.View):
                 return
 
             remove_ticket(str(thread.id))
-            embed = discord.Embed(title=f"Ticket closed by <@{interaction.user.nick}>",
+            embed = discord.Embed(title=f"Ticket closed by {interaction.user.nick}",
                       colour=0xf51616)
             embed.set_footer(text="🔒This ticket is locked now!")
             await interaction.response.send_message(embed=embed)
@@ -1199,13 +1199,6 @@ async def ticket_internal(interaction: discord.Interaction):
         # Create a private thread in the same channel
         channel = bot.get_channel(TICKET_CHANNEL_ID)
         if channel:
-            thread_name = f"[Other] - {interaction.user.display_name}"
-            thread = await channel.create_thread(
-                name=thread_name,
-                type=discord.ChannelType.private_thread,
-                invitable=False
-            )
-
             # Create a private thread in the same channel
             channel = bot.get_channel(TICKET_CHANNEL_ID)
             thread_name = f"[INT] - {interaction.user.display_name}"
@@ -2095,7 +2088,7 @@ async def ticket_close(interaction: discord.Interaction):
     remove_ticket(str(interaction.channel.id))
 
     # Lock and archive
-    embed = discord.Embed(title=f"Ticket closed by <@{interaction.user.nick}>",
+    embed = discord.Embed(title=f"Ticket closed by {interaction.user.nick}",
                 colour=0xf51616)
     embed.set_footer(text="🔒This ticket is locked now!")
     await interaction.response.send_message(embed=embed)
