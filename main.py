@@ -10,7 +10,7 @@ from typing import Optional, Dict
 import re
 from messages import trainee_messages, cadet_messages, welcome_to_swat
 import random
-from config import GUILD_ID, TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL, TRAINEE_CHAT_CHANNEL, SWAT_CHAT_CHANNEL, TRAINEE_ROLE, CADET_ROLE, SWAT_ROLE_ID, OFFICER_ROLE_ID, RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID, TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID
+from config_testing import GUILD_ID, TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL, TRAINEE_CHAT_CHANNEL, SWAT_CHAT_CHANNEL, TRAINEE_ROLE, CADET_ROLE, SWAT_ROLE_ID, OFFICER_ROLE_ID, RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID, TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE
 
 # --------------------------------------
 #               CONSTANTS
@@ -2113,7 +2113,7 @@ async def on_shutdown():
     save_requests()
 
 try:
-    with open("token.txt", "r") as file:
+    with open(TOKEN_FILE, "r") as file:
         TOKEN = file.read().strip()
 except IOError as e:
     print(f"❌ Error reading token.txt: {e}")
