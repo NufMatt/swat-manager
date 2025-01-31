@@ -1,5 +1,5 @@
 import discord
-from discord import app_commands
+from discord import app_commands, ButtonStyle
 from discord.ext import commands, tasks
 import asyncio
 import os
@@ -30,6 +30,9 @@ SWAT_ROLE_ID   = 1321163290948145212
 OFFICER_ROLE_ID = 1334844188470022144
 RECRUITER_ID   = 1334600500448067707
 LEADERSHIP_ID  = 1300539048225673226
+EU_ROLE_ID = 1334943073519538217
+NA_ROLE_ID = 1334942947703132290
+SEA_ROLE_ID = 1334943169485475840
 
 TARGET_CHANNEL_ID   = 1334474489236557896  # Channel for main embed
 REQUESTS_CHANNEL_ID = 1334474601668804638  # Where requests are posted
@@ -142,7 +145,7 @@ def get_entry(thread_id: str) -> Optional[Dict]:
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
         cursor.execute(
-            """SELECT recruiter_id, starttime, endtime, role_type, embed_id, ingame_name, user_id, region
+            """SELECT recruiter_id, starttime, endtime, role_type, embed_id, ingame_name, user_id, region, reminder_sent
                FROM entries
                WHERE thread_id = ?""",
             (thread_id,)
@@ -158,7 +161,8 @@ def get_entry(thread_id: str) -> Optional[Dict]:
                 "embed_id": row[4],
                 "ingame_name": row[5],
                 "user_id": row[6],
-                "region": row[7]
+                "region": row[7],
+                "reminder_sent": row[8]
             }
         return None
     except sqlite3.Error as e:
@@ -299,7 +303,7 @@ def create_embed() -> discord.Embed:
             "If everything checks out, you’ll receive a message in the trainee chat!\n\n"
             "🔹 **Request Name Change** – Need to update your name? Press this button and enter your new name **without any SWAT tags!** "
             "🚨 **Make sure your IGN and Discord name match at all times!** If they don’t, request a name change here!\n\n"
-            "🔹 **Request Other** – Want a guest role or a friends role? Click here and type your request! We’ll handle the rest.\n\n"
+            "🔹 **Request Other** – Want another role? Click here and type your request! We’ll handle the rest.\n\n"
             "⚠️ **Important:** Follow the instructions carefully to avoid delays. Let’s get you set up and ready to roll! 🚀"
         ),
         colour=0x008040
@@ -437,7 +441,7 @@ class TraineeView(discord.ui.View):
 
 class RequestActionView(discord.ui.View):
     """View with Accept/Ignore buttons for new request embed."""
-    def __init__(self, user_id: int, request_type: str, ingame_name: str = None, recruiter: str = None, new_name: str = None, region: str = None):
+    def __init__(self, user_id: int = None, request_type: str = None, ingame_name: str = None, recruiter: str = None, new_name: str = None, region: str = None):
         super().__init__(timeout=None)
         self.user_id      = user_id
         self.request_type = request_type
@@ -455,7 +459,11 @@ class RequestActionView(discord.ui.View):
         try:
             embed = interaction.message.embeds[0]
             embed.color = discord.Color.green()
-            embed.title += " (Accepted)"
+            if self.request_type in ["name_change", "other"]:
+                embed.title += " (Done)"
+            else:
+                embed.title += " (Accepted)"
+            
             embed.add_field(name="Handled by:", value=f"<@{interaction.user.id}>", inline=False)
 
             # Remove from pending requests
@@ -479,18 +487,62 @@ class RequestActionView(discord.ui.View):
                 if member:
                     await set_user_nickname(member, "trainee")
                     trainee_role_obj = guild.get_role(TRAINEE_ROLE)
+
                     if trainee_role_obj:
                         try:
                             await member.add_roles(trainee_role_obj)
                         except discord.Forbidden:
-                            await interaction.response.send_message("❌ Bot lacks permission to assign roles.", ephemeral=True)
+                            await interaction.followup.send("❌ Bot lacks permission to assign roles.", ephemeral=True)
                             return
                         except discord.HTTPException as e:
-                            await interaction.response.send_message(f"❌ HTTP Error assigning role: {e}", ephemeral=True)
+                            await interaction.followup.send(f"❌ HTTP Error assigning role: {e}", ephemeral=True)
                             return
                     else:
                         await interaction.response.send_message("❌ Trainee role not found.", ephemeral=True)
                         return
+
+                    if self.region == "EU":
+                        EU_role = guild.get_role(EU_ROLE_ID)
+                        if EU_role:
+                            try:
+                                await member.add_roles(EU_role)
+                            except discord.Forbidden:
+                                await interaction.followup.send("❌ Bot lacks permission to assign roles.", ephemeral=True)
+                                return
+                            except discord.HTTPException as e:
+                                await interaction.followup.send(f"❌ HTTP Error assigning role: {e}", ephemeral=True)
+                                return
+                        else:
+                            await interaction.response.send_message("❌ NA role not found.", ephemeral=True)
+                            return
+                    elif self.region == "NA":
+                        NA_role = guild.get_role(NA_ROLE_ID)
+                        if NA_role:
+                            try:
+                                await member.add_roles(NA_role)
+                            except discord.Forbidden:
+                                await interaction.followup.send("❌ Bot lacks permission to assign roles.", ephemeral=True)
+                                return
+                            except discord.HTTPException as e:
+                                await interaction.followup.send(f"❌ HTTP Error assigning role: {e}", ephemeral=True)
+                                return
+                        else:
+                            await interaction.response.send_message("❌ EU role not found.", ephemeral=True)
+                            return
+                    elif self.region == "SEA":
+                        SEA_role = guild.get_role(SEA_ROLE_ID)
+                        if SEA_role:
+                            try:
+                                await member.add_roles(SEA_role)
+                            except discord.Forbidden:
+                                await interaction.followup.send("❌ Bot lacks permission to assign roles.", ephemeral=True)
+                                return
+                            except discord.HTTPException as e:
+                                await interaction.followup.send(f"❌ HTTP Error assigning role: {e}", ephemeral=True)
+                                return
+                        else:
+                            await interaction.response.send_message("❌ SEA role not found.", ephemeral=True)
+                            return
 
                     channel = guild.get_channel(TRAINEE_NOTES_CHANNEL)
                     if channel:
@@ -541,34 +593,6 @@ class RequestActionView(discord.ui.View):
                 else:
                     await interaction.response.send_message("❌ Member not found in guild.", ephemeral=True)
 
-            # If it's a name change request:
-            elif self.request_type == "name_change":
-                guild = bot.get_guild(GUILD_ID)
-                if not guild:
-                    await interaction.response.send_message("❌ Guild not found.", ephemeral=True)
-                    return
-
-                leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
-                if not leadership_role or (leadership_role not in interaction.user.roles):
-                    await interaction.response.send_message("❌ You do not have permission to accept this name change.", ephemeral=True)
-                    return
-
-                member = guild.get_member(self.user_id)
-                if member:
-                    base_nick = member.nick if member.nick else member.name
-                    new_name_cleaned = re.sub(r'(?:\s*\[(?:CADET|TRAINEE|SWAT)\])+$', '', str(self.new_name), flags=re.IGNORECASE)
-                    suffix_match = re.search(r'\[(CADET|TRAINEE|SWAT)\]', base_nick, flags=re.IGNORECASE)
-                    suffix = suffix_match.group(0) if suffix_match else ""
-                    changing_name = new_name_cleaned + (" " + suffix if suffix else "")
-                    try:
-                        await member.edit(nick=changing_name)
-                    except discord.Forbidden:
-                        await interaction.response.send_message("❌ Forbidden: Cannot change nickname.", ephemeral=True)
-                        return
-                    except discord.HTTPException as e:
-                        await interaction.response.send_message(f"❌ HTTP Error changing nickname: {e}", ephemeral=True)
-                        return
-
             await interaction.message.edit(embed=embed, view=None)
 
         except IndexError:
@@ -603,6 +627,77 @@ class RequestActionView(discord.ui.View):
 
         except Exception as e:
             await interaction.response.send_message(f"❌ Error ignoring request: {e}", ephemeral=True)
+
+    @discord.ui.button(label="Deny w/Reason", style=discord.ButtonStyle.danger, custom_id="request_deny_reason")
+    async def deny_with_reason(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Opens a modal so the recruiter/leadership can specify a reason and DM the user."""
+        # 1) Check role/permission if you want
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+        # Example logic: If it's a name change or "other" request, only leadership can deny with reason:
+        if self.request_type in ["name_change", "other"]:
+            if not leadership_role or (leadership_role not in interaction.user.roles):
+                await interaction.response.send_message("❌ You do not have permission to deny this request.", ephemeral=True)
+                return
+        else:
+            # For a trainee request, a recruiter might deny
+            if not recruiter_role or (recruiter_role not in interaction.user.roles):
+                await interaction.response.send_message("❌ You do not have permission to deny this request.", ephemeral=True)
+                return
+
+            updated_embed = interaction.message.embeds[0]
+            updated_embed.color = discord.Color.red()
+            updated_embed.title += " (Denied with reason)"
+            updated_embed.add_field(name="Ignored by:", value=f"<@{interaction.user.id}>", inline=False)
+            # updated_embed.add_field(name="Reason:", value=f"```{reason}```")
+            await interaction.message.edit(embed=updated_embed, view=None)
+
+            user_id_str = str(self.user_id)
+            if user_id_str in pending_requests:
+                del pending_requests[user_id_str]
+                save_requests()
+        modal = DenyReasonModal(self.user_id)
+        await interaction.response.send_modal(modal)
+
+class CloseThreadView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Close Thread", style=discord.ButtonStyle.danger, custom_id="close_thread")
+    async def close_thread_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        thread = interaction.channel
+        user = interaction.user
+
+        # Optional: Restrict who can close the thread (e.g., only the ticket creator or specific roles)
+        # Example: Only the user who opened the ticket can close it
+        ticket_data = get_ticket_info(str(thread.id))
+        if not ticket_data:
+            await interaction.response.send_message("❌ No ticket data found for this thread.", ephemeral=True)
+            return
+
+        if interaction.user.id != int(ticket_data[1]):  # Assuming ticket_data[1] is user_id
+            await interaction.response.send_message("❌ You do not have permission to close this thread.", ephemeral=True)
+            return
+
+        try:
+            ticket_data = get_ticket_info(str(interaction.channel.id))
+            if not ticket_data:
+                await interaction.response.send_message("❌ This thread is not a registered ticket.", ephemeral=True)
+                return
+
+            remove_ticket(str(thread.id))
+            embed = discord.Embed(title=f"Ticket closed by <@{interaction.user.nick}>",
+                      colour=0xf51616)
+            embed.set_footer(text="🔒This ticket is locked now!")
+            await interaction.response.send_message(embed=embed)
+            await interaction.channel.edit(locked=True, archived=True)
+    
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don't have permission to close this thread.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"❌ Failed to close thread: {e}", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ An unexpected error occurred: {e}", ephemeral=True)
 
 # Command to add a trainee
 @app_commands.describe(
@@ -706,17 +801,17 @@ async def list_requests_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="clear_requests", description="Clears the entire pending requests list.")
 async def clear_requests_command(interaction: discord.Interaction):
-    # Adjust permission checks as needed
     leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
     if not leadership_role or (leadership_role not in interaction.user.roles):
         await interaction.response.send_message("❌ You do not have permission to clear requests.", ephemeral=True)
         return
 
-    # Make sure you truly want to clear everything:
+    # Clear everything
     pending_requests.clear()
     save_requests()  # Writes the now-empty dictionary to requests.json
 
-    await interaction.followup.send("✅ All pending requests have been **cleared**!", ephemeral=True)
+    # FIXED HERE: use a normal send_message instead of followup
+    await interaction.response.send_message("✅ All pending requests have been **cleared**!", ephemeral=True)
 
 # -----------------------
 # PERSISTENT VIEW
@@ -747,14 +842,16 @@ class TicketView(discord.ui.View):
             invitable=False
         )
 
-        # Ping the appropriate role, then send an embed
-        await thread.send(f"<@&{role_id}> <@{interaction.user.id}>")
-        embed = discord.Embed(
-            title="What can we do for you?",
-            description="Please describe your issue or request below.",
-            color=discord.Color.blue()
-        )
-        await thread.send(embed=embed)
+        try:
+            await thread.send(f"<@&{role_id}> <@{interaction.user.id}>")
+            embed = discord.Embed(title="🎟️ Ticket Opened", description="Thank you for reaching out! Our team will assist you shortly.\n\n📌 In the meantime:\n🔹 Can you provide more details about your issue?\n🔹 Be clear and precise so we can help faster.\n\n⏳ Please be patient – we’ll be with you soon!", colour=0x158225)
+            await thread.send(embed=embed, view=CloseThreadView())  # Attach the CloseThreadView here
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Forbidden: Cannot send messages in the thread.", ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"❌ HTTP Error sending messages: {e}", ephemeral=True)
+            return
 
         # Save the ticket info
         add_ticket(
@@ -773,9 +870,6 @@ class TicketView(discord.ui.View):
 async def finalize_trainee_request(interaction: discord.Interaction, user_id_str: str):
     """Finalize the trainee request after selections."""
     try:
-        # 1) Remove or comment out this line: await interaction.response.defer()
-        #    Because we already responded to the same interaction in RecruiterSelect.
-        
         request = pending_requests.get(user_id_str)
         if not request:
             await interaction.followup.send("❌ No pending request found to finalize.", ephemeral=True)
@@ -820,7 +914,6 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
         await channel.send(f"<@{recruiter_id}>")
         await channel.send(embed=embed, view=view)
 
-        # 2) Use followup to send the final ephemeral message
         await interaction.followup.send("✅ Your trainee role request has been submitted!", ephemeral=True)
 
     except Exception as e:
@@ -831,6 +924,52 @@ RECRUITERS = [
     {"name": "Arcadia", "id": 222222222222222222},
     {"name": "Happy", "id": 333333333333333333},
 ]  # Replace with actual data or dynamically updated
+
+class DenyReasonModal(discord.ui.Modal):
+    """Modal to capture the denial reason for a request and DM the user."""
+    def __init__(self, user_id: int):
+        super().__init__(title="Denial Reason")
+        self.user_id = user_id
+
+    reason = discord.ui.TextInput(
+        label="Reason for Denial",
+        style=discord.TextStyle.long,
+        placeholder="Explain why this request is denied...",
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        reason_text = self.reason.value
+
+        # 1) Attempt to DM the user
+        user = interaction.client.get_user(self.user_id)
+        if user:
+            try:
+                await user.send(
+                    f"Your trainee request has been **denied** for the following reason:\n"
+                    f"```\n{reason_text}\n```"
+                )
+            except discord.Forbidden:
+                print(f"❌ Could not DM user {self.user_id}; user may have DMs blocked.")
+
+        # 2) Update the existing embed (change color, add fields, remove buttons)
+        if interaction.message and interaction.message.embeds:
+            updated_embed = interaction.message.embeds[0]
+            updated_embed.color = discord.Color.red()
+            updated_embed.add_field(name="Reason:", value=f"```\n{reason_text}\n```", inline=False)
+
+            await interaction.message.edit(embed=updated_embed, view=None)
+
+        # 3) Remove from pending_requests
+        user_id_str = str(self.user_id)
+        if user_id_str in pending_requests:
+            del pending_requests[user_id_str]
+            save_requests()
+
+        # 4) Acknowledge the action
+        await interaction.response.send_message("✅ Denial reason submitted. User has been notified.", ephemeral=True)
+
+
 
 class RegionSelect(discord.ui.Select):
     def __init__(self):
@@ -961,7 +1100,7 @@ class NameChangeModal(discord.ui.Modal, title="Request Name Change"):
                 colour=0x298ecb
             )
             embed.add_field(name="New Name:", value=f"```{new_name_final}```", inline=True)
-
+            embed.add_field(name="Make sure to actually change the name BEFORE clicking accept!", value="", inline=False)
             view = RequestActionView(
                 user_id=interaction.user.id,
                 request_type="name_change",
@@ -1001,6 +1140,7 @@ class RequestOther(discord.ui.Modal, title="RequestOther"):
                 colour=0x298ecb
             )
             embed.add_field(name="Request:", value=f"```{self.other.value}```", inline=True)
+            embed.add_field(name="Make sure to actually ADD the ROLE BEFORE clicking accept!", value="", inline=False)
 
             view = RequestActionView(
                 user_id=interaction.user.id,
@@ -1028,6 +1168,8 @@ async def on_ready():
     load_requests()  # Load any pending requests from disk
     bot.add_view(TraineeView())  # Register the persistent view
     bot.add_view(TicketView())
+    bot.add_view(RequestActionView())
+    bot.add_view(CloseThreadView()) 
     
     global embed_message_id
     if os.path.exists(EMBED_ID_FILE):
@@ -1065,6 +1207,56 @@ async def on_ready():
 @bot.tree.command(name="hello", description="Say hello to the bot")
 async def hello_command(interaction: discord.Interaction):
     await interaction.response.send_message(f"✅ Hello, {interaction.user.mention}!", ephemeral=True)
+
+@bot.tree.command(name="ticket-internal", description="Creates a ticket without pinging anybody!")
+async def hello_command(interaction: discord.Interaction):
+        """Creates a private thread and pings the correct role."""
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+        if not leadership_role or (leadership_role not in interaction.user.roles):
+            await interaction.response.send_message("❌ You do not have permission to ignore this request.", ephemeral=True)
+            return
+        
+        # Create a private thread in the same channel
+        channel = bot.get_channel(TICKET_CHANNEL_ID)
+        if channel:
+            thread_name = f"[Other] - {interaction.user.display_name}"
+            thread = await channel.create_thread(
+                name=thread_name,
+                type=discord.ChannelType.private_thread,
+                invitable=False
+            )
+
+            # Create a private thread in the same channel
+            channel = bot.get_channel(TICKET_CHANNEL_ID)
+            thread_name = f"[INT] - {interaction.user.display_name}"
+            thread = await channel.create_thread(
+                name=thread_name,
+                type=discord.ChannelType.private_thread,
+                invitable=False
+            )
+
+            try:
+                await thread.send(f"<@{interaction.user.id}>")
+                embed = discord.Embed(title="🔒 Private Ticket Opened", description="This ticket is private. To invite someone, please **tag them** in this thread.  \n\n📌 Only tagged members will be able to see and respond.", colour=0xe9ee1e)
+                await thread.send(embed=embed, view=CloseThreadView())  # Attach the CloseThreadView here
+            except discord.Forbidden:
+                await interaction.response.send_message("❌ Forbidden: Cannot send messages in the thread.", ephemeral=True)
+                return
+            except discord.HTTPException as e:
+                await interaction.response.send_message(f"❌ HTTP Error sending messages: {e}", ephemeral=True)
+                return
+            # Save the ticket info
+            add_ticket(
+                thread_id=str(thread.id),
+                user_id=str(interaction.user.id),
+                created_at=now_str,
+                ticket_type="other"
+            )
+
+            await interaction.response.send_message("✅ Your ticket has been created!", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Ticket channel not found", ephemeral=True)
 
 @bot.tree.command(name="testconfiguration", description="Check if the bot is properly configured.")
 async def testconfiguration(interaction: discord.Interaction):
@@ -1206,7 +1398,6 @@ async def testconfiguration(interaction: discord.Interaction):
             checks.append(f"✅ Can create threads in <#{REQUESTS_CHANNEL_ID}>")
         else:
             checks.append(f"❌ Cannot create threads in <#{REQUESTS_CHANNEL_ID}>")
-
 
     checks.append("\n")
     checks.append("## Checking role permissions \n")
@@ -1379,7 +1570,37 @@ async def check_expired_endtimes():
         if conn:
             conn.close()
 
+@tasks.loop(minutes=5)
+async def ensure_ticket_embed():
+    channel = bot.get_channel(TICKET_CHANNEL_ID)
+    if not channel:
+        return
+    
+    # Load the stored embed ID (if any)
+    stored_embed_id = None
+    if os.path.exists(EMBED_FILE):
+        with open(EMBED_FILE, "r") as f:
+            data = json.load(f)
+            stored_embed_id = data.get("embed_id")
 
+    # If we have an embed ID, try to fetch the message
+    if stored_embed_id:
+        try:
+            # If the message is found, we're done
+            await channel.fetch_message(stored_embed_id)
+            return
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            # The message no longer exists or can't be fetched
+            pass
+
+    # If the embed doesn't exist, send a new one
+    embed = discord.Embed(title="🎟️ Open a Ticket", description="Need help? Choose the right department for your request:\n👑 Leadership – Crew-related issues, complaints, verification or giveaway claims.\n🛡️ Recruiters – Inquiries about Trainee program, applications or recruitment in general.\n\n📌 Click a button below to open a private thread with the right team!",
+                      colour=0x28afcc)
+    sent_msg = await channel.send(embed=embed, view=TicketView())
+
+    # Save the new embed ID
+    with open(EMBED_FILE, "w") as f:
+        json.dump({"embed_id": sent_msg.id}, f)
 
 # --------------------------------------
 #     STAFF / MANAGEMENT COMMANDS -> Threads
@@ -1765,6 +1986,7 @@ async def resend_voting_command(interaction: discord.Interaction):
         if not data:
             await interaction.response.send_message("❌ No DB entry for this thread!", ephemeral=True)
             return
+    
         voting_embed = await create_voting_embed(data["starttime"], data["endtime"], data["recruiter_id"], data["region"], data["ingame_name"])
         embed_msg = await interaction.channel.send(embed=voting_embed)
         await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
@@ -1775,6 +1997,86 @@ async def resend_voting_command(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"❌ Error occurred: {e}", ephemeral=True)
 
+
+@bot.tree.command(name="early_vote", description="Resends a voting embed!")
+async def early_vote(interaction: discord.Interaction):
+    """Resend a voting embed for the current thread."""
+    recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+    if not recruiter_role or (recruiter_role not in interaction.user.roles):
+        await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+        return
+
+    if not isinstance(interaction.channel, discord.Thread):
+        await interaction.response.send_message("❌ This command must be used in a thread.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        data = get_entry(str(interaction.channel.id))
+        if not data:
+            await interaction.followup.send("❌ No DB entry for this thread!", ephemeral=True)
+            return
+        if str(data["reminder_sent"]) == "0":
+            thread = bot.get_channel(int(data["thread_id"])) if data["thread_id"].isdigit() else None
+
+            if thread and isinstance(thread, discord.Thread):
+                try:
+                    if not isinstance(data["starttime"], datetime):
+                        start_time = datetime.strptime(str(data["starttime"]), "%Y-%m-%d %H:%M:%S.%f")
+                    else:
+                        start_time = data["endtime"]
+                except ValueError:
+                    print(f"❌ Error parsing starttime: {data["starttime"]}")
+                
+                conn = sqlite3.connect(DATABASE_FILE)
+                cursor = conn.cursor()
+                now = datetime.now()
+
+                if data["role_type"] == "cadet":
+                    voting_embed = discord.Embed(
+                        description=(
+                            "SWAT, please express your vote below.\n"
+                            "Use <:plus_one:1334498534187208714>, ❔, or <:minus_one:1334498485390544989> accordingly."
+                        ),
+                        color=0x000000
+                    )
+                    flags = {"EU": "🇪🇺 ", "NA": "🇺🇸 ", "SEA": "🇸🇬 "}
+                    region_name = data["region"][:-1] if data["region"] and data["region"][-1].isdigit() else data["region"]
+                    title = f"{flags.get(region_name, '')}{data["region"]}"
+                    voting_embed.add_field(name="InGame Name:", value=data["ingame_name"], inline=True)
+                    voting_embed.add_field(name="Region:", value=title, inline=True)
+                    voting_embed.add_field(name="", value="", inline=False)
+                    voting_embed.add_field(name="Voting started:", value=create_discord_timestamp(start_time), inline=True)
+                    voting_embed.add_field(name="Voting has ended!", value="", inline=True)
+                    voting_embed.add_field(name="", value="", inline=False)
+                    voting_embed.add_field(name="Thread managed by:", value=f"<@{data["recruiter_id"]}>", inline=True)
+                    voting_embed.add_field(name="Early voting issued by:", value=f"<@{interaction.user.id}>", inline=True)
+                    await thread.send(f"<@&{SWAT_ROLE_ID}> It's time for another cadet voting!⌛")
+                    embed_msg = await thread.send(embed=voting_embed)
+                    await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
+                    await embed_msg.add_reaction("❔")
+                    await embed_msg.add_reaction("<:minus_one:1334498485390544989>")
+
+                    cursor.execute(
+                        """
+                        UPDATE entries 
+                        SET reminder_sent = 1 
+                        WHERE thread_id = ?
+                        """,
+                        (interaction.channel.id,)
+                    )
+                    conn.commit()
+                    await interaction.followup.send("✅ Early vote has been issued.", ephemeral=True)
+                else:
+                    await interaction.followup.send(f"❌ Not a cadet thread!", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ Reminder has already been sent!", ephemeral=True)
+    except Exception as e:
+        if interaction.response.is_done():
+            await interaction.followup.send(f"❌ Error occurred: {e}", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"❌ Error occurred: {e}", ephemeral=True)
+        
 # -----------------------
 # COMMANDS
 # -----------------------
@@ -1814,11 +2116,9 @@ async def ticket_close(interaction: discord.Interaction):
     remove_ticket(str(interaction.channel.id))
 
     # Lock and archive
-    embed = discord.Embed(
-        title="Ticket Closed",
-        description=f"<@{interaction.user.id}> has closed this ticket. No more messages can be sent.",
-        color=discord.Color.red()
-    )
+    embed = discord.Embed(title=f"Ticket closed by <@{interaction.user.nick}>",
+                colour=0xf51616)
+    embed.set_footer(text="🔒This ticket is locked now!")
     await interaction.response.send_message(embed=embed)
     await interaction.channel.edit(locked=True, archived=True)
 
