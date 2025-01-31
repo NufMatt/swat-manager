@@ -1,6 +1,10 @@
 ###
 token.txt
-
+data.db
+tickets.db
+tickets_embed.json
+requests.json
+embed.txt
 
 
 
