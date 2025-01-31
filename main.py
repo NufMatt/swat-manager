@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import sqlite3
 from typing import Optional, Dict
 import re
+from messages import trainee_messages, cadet_messages, welcome_to_swat
+import random
 
 # --------------------------------------
 #               CONSTANTS
@@ -19,6 +21,8 @@ GUILD_ID = 1300519755622383689
 
 TRAINEE_NOTES_CHANNEL = 1334493226148691989
 CADET_NOTES_CHANNEL   = 1334493243018182699
+TRAINEE_CHAT_CHANNEL = 1334534670330761389
+SWAT_CHAT_CHANNEL = 1324733745919692800
 
 TRAINEE_ROLE = 1321853549273157642
 CADET_ROLE   = 1321853586384093235
@@ -200,11 +204,10 @@ def create_discord_timestamp(dt_obj: datetime) -> str:
 
 def create_embed() -> discord.Embed:
     """Create the main management embed with buttons."""
-    return discord.Embed(
-        title="Trainee Management",
-        description="Please select an option below:",
-        color=discord.Color.blue()
-    )
+    embed = discord.Embed(title="**Welcome to the SWAT Community!** 🎉🚔",
+                      description="📌 **Select the appropriate button below:**  \n\n🔹 **Request Trainee Role** – If you applied through the website and got accepted **and received a DM from a recruiter**, press this button! Fill in your **EXACT** in-game name, select the region you play in, and choose the recruiter who accepted you. If everything checks out, you’ll receive a message in the trainee chat!  \n\n🔹 **Request Name Change** – Need to update your name? Press this button and enter your new name **without any SWAT tags!** 🚨 **Make sure your IGN and Discord name match at all times!** If they don’t, request a name change here!  \n\n🔹 **Request Other** – Want a guest role or a friends role? Click here and type your request! We’ll handle the rest.  \n\n⚠️ **Important:** Follow the instructions carefully to avoid delays. Let’s get you set up and ready to roll! 🚀",
+                      colour=0x008040)
+    return embed
 
 async def update_recruiters():
     guild = bot.get_guild(GUILD_ID)
@@ -377,7 +380,7 @@ class RequestActionView(discord.ui.View):
                         await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
                         await embed_msg.add_reaction("❔")
                         await embed_msg.add_reaction("<:minus_one:1334498485390544989>")
-
+                        
                         add_entry(
                             thread_id=thread.id,
                             recruiter_id=str(interaction.user.id),
@@ -389,6 +392,14 @@ class RequestActionView(discord.ui.View):
                             user_id=str(self.user_id), 
                             region=str(self.region)
                         )
+                        
+                        ### SENDTRAINEEMESSAGE
+                        trainee_channel = guild.get_channel(TRAINEE_CHAT_CHANNEL)
+                        if trainee_channel:
+                            message = random.choice(trainee_messages).replace("{username}", "<@" + str(self.user_id) + ">")
+                            trainee_embed = discord.Embed(description=message, colour=0x008000)
+                            await trainee_channel.send("<@" + str(self.user_id) + ">")
+                            await trainee_channel.send(embed=trainee_embed)
 
         # If it's a name change request:
         elif self.request_type == "name_change":
@@ -431,11 +442,11 @@ class RequestActionView(discord.ui.View):
                 await interaction.response.send_message("You do not have permission to use this embed.", ephemeral=True)
                 return
             
-        embed = interaction.message.embeds[0]
-        embed.color = discord.Color.red()
-        embed.title += " (Ignored)"
-        embed.add_field(name="Ignored by:", value=f"<@{interaction.user.id}>", inline=False)
-        await interaction.message.edit(embed=embed, view=None)
+        updated_embed = interaction.message.embeds[0]
+        updated_embed.color = discord.Color.red()
+        updated_embed.title += " (Ignored)"
+        updated_embed.add_field(name="Ignored by:", value=f"<@{interaction.user.id}>", inline=False)
+        await interaction.message.edit(embed=updated_embed, view=None)
 
         user_id_str = str(self.user_id)
         if user_id_str in pending_requests:
@@ -682,27 +693,6 @@ async def on_ready():
     check_expired_endtimes.start()
 
     channel = bot.get_channel(TARGET_CHANNEL_ID)
-    if channel:
-        if embed_message_id:
-            try:
-                await channel.fetch_message(embed_message_id)
-                print("Embed message exists. No need to send a new one.")
-            except discord.NotFound:
-                embed = create_embed()
-                view = TraineeView()
-                msg = await channel.send(embed=embed, view=view)
-                embed_message_id = msg.id
-                with open(EMBED_ID_FILE, "w") as f:
-                    f.write(str(embed_message_id))
-                print(f"Sent new embed and saved embed_message_id: {embed_message_id}")
-        else:
-            embed = create_embed()
-            view = TraineeView()
-            msg = await channel.send(embed=embed, view=view)
-            embed_message_id = msg.id
-            with open(EMBED_ID_FILE, "w") as f:
-                f.write(str(embed_message_id))
-            print(f"Sent new embed and saved embed_message_id: {embed_message_id}")
 
 @bot.tree.command(name="hello", description="Say hello to the bot")
 async def hello_command(interaction: discord.Interaction):
@@ -763,7 +753,7 @@ async def check_expired_endtimes():
             # Create the embed
             embed = discord.Embed(
                 description=f"**Reminder:** This thread has been open for **{days_open} days**.",
-                color=0xff8040
+                color=0x008040
             )
             
             # For trainee threads, ping the recruiter
@@ -795,7 +785,7 @@ async def check_expired_endtimes():
                 voting_embed.add_field(name="Voting started:", value=create_discord_timestamp(start_time), inline=True)
                 voting_embed.add_field(name="Voting has ended!", value="", inline=True)
                 voting_embed.add_field(name="Thread managed by:", value=f"<@{recruiter_id}>", inline=False)
-                await thread.send("<@" + str(SWAT_ROLE_ID) + ">  It's time for another cadet voting!⌛")
+                await thread.send("<@&" + str(SWAT_ROLE_ID) + ">  It's time for another cadet voting!⌛")
                 embed_msg = await thread.send(embed=voting_embed)
                 await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
                 await embed_msg.add_reaction("❔")
@@ -891,7 +881,6 @@ async def add_trainee_command(interaction: discord.Interaction, user_id: str, in
             user_id=str(user_id),
             region=region.value
         )
-        await member.send("")
         await interaction.followup.send("Trainee added successfully!", ephemeral=True)
     else:
         await interaction.followup.send("Cannot find the trainee notes channel.", ephemeral=True)
@@ -960,10 +949,10 @@ async def lock_thread_command(interaction: discord.Interaction):
     elif c_role in member.roles:
         await member.remove_roles(c_role)
     
-    embed = discord.Embed(title="❌ Removed",
-                    description=str(data["ingame_name"]) + " has been removed!",
-                    colour=0x950004)
+    
+    embed = discord.Embed(title="❌ " + str(data["ingame_name"]) + " has been removed!", colour=0xf94144)
     embed.set_footer(text="🔒This thread is locked now!")
+    
     await interaction.followup.send(embed=embed)
 
 @bot.tree.command(name="promote", description="Promote the user in the current voting thread (Trainee->Cadet or Cadet->SWAT).")
@@ -991,9 +980,7 @@ async def promote_user_command(interaction: discord.Interaction):
             promotion = "Cadet"
         elif data["role_type"] == "cadet":
             promotion = "SWAT Officer"
-        embed = discord.Embed(title="🏅Promotion",
-                      description=str(data["ingame_name"]) + " has been promoted to " + str(promotion) + "!🎉",
-                      colour=0xce33db)
+        embed = discord.Embed(title="🏅 " + str(data["ingame_name"]) + " has been promoted to " + str(promotion) + "!🎉", colour=0x43bccd)
         embed.set_footer(text="🔒This thread is locked now!")
         await interaction.followup.send(embed=embed)
     else:
@@ -1040,6 +1027,15 @@ async def promote_user_command(interaction: discord.Interaction):
             await embed_msg.add_reaction("❔")
             await embed_msg.add_reaction("<:minus_one:1334498485390544989>")
 
+            ### SENDTRAINEEMESSAGE
+            swat_chat = guild.get_channel(SWAT_CHAT_CHANNEL)
+            
+            if swat_chat:
+                message = random.choice(cadet_messages).replace("{username}", "<@" + str(data["user_id"]) + ">")
+                embed = discord.Embed(description=message, colour=0x008000)
+                await swat_chat.send("<@" + str(data["user_id"]) + ">")
+                await swat_chat.send(embed=embed)
+
             add_entry(
                 thread_id=thread.id,
                 recruiter_id=data["recruiter_id"],
@@ -1060,6 +1056,7 @@ async def promote_user_command(interaction: discord.Interaction):
         if c_role in member.roles:
             await member.remove_roles(c_role)
         await member.add_roles(s_role)
+        await member.send(welcome_to_swat)
 
 @bot.tree.command(name="extend", description="Extend the current thread's voting period.")
 @app_commands.describe(days="How many days to extend?")
@@ -1090,10 +1087,7 @@ async def extend_thread_command(interaction: discord.Interaction, days: int):
         new_embed = await create_voting_embed(data["starttime"], new_end, int(data["recruiter_id"]), data["region"], data["ingame_name"], extended=True)
         await msg.edit(embed=new_embed)
 
-        embed = discord.Embed(
-            description=f"This {data['role_type']} voting has been extended by {days} days!",
-            colour=0x5b0edc
-        )
+        embed = discord.Embed(description="This " + str(data['role_type']) + " voting has been extended by " + str(days) + " days!", colour=0xf9c74f)
         await interaction.response.send_message(embed=embed)
     else:
         await interaction.response.send_message("Failed to update endtime.", ephemeral=True)
