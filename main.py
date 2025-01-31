@@ -925,7 +925,7 @@ class DenyReasonModal(discord.ui.Modal):
         if user:
             try:
                 await user.send(
-                    f"Your trainee request has been **denied** for the following reason:\n"
+                    f"Your request has been **denied** for the following reason:\n"
                     f"```\n{reason_text}\n```"
                 )
             except discord.Forbidden:
