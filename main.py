@@ -697,7 +697,7 @@ class CloseThreadView(discord.ui.View):
     ]
 )
 @bot.tree.command(name="force_add", description="Manually add an existing trainee / cadet thread to the database!")
-async def add_trainee_command(
+async def force_add(
     interaction: discord.Interaction, 
     user_id: str, 
     ingame_name: str, 
@@ -745,7 +745,7 @@ async def add_trainee_command(
         await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 
 @bot.tree.command(name="list_requests", description="Lists the currently stored pending requests.")
-async def list_requests_command(interaction: discord.Interaction):
+async def list_requests(interaction: discord.Interaction):
     leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
     if not leadership_role or (leadership_role not in interaction.user.roles):
         await interaction.response.send_message("❌ You do not have permission to list requests.", ephemeral=True)
@@ -779,7 +779,7 @@ async def list_requests_command(interaction: discord.Interaction):
     await interaction.followup.send(f"**Current Pending Requests:**\n\n{reply_text}", ephemeral=True)
 
 @bot.tree.command(name="clear_requests", description="Clears the entire pending requests list.")
-async def clear_requests_command(interaction: discord.Interaction):
+async def clear_requests(interaction: discord.Interaction):
     leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
     if not leadership_role or (leadership_role not in interaction.user.roles):
         await interaction.response.send_message("❌ You do not have permission to clear requests.", ephemeral=True)
@@ -1187,8 +1187,8 @@ async def on_ready():
 async def hello_command(interaction: discord.Interaction):
     await interaction.response.send_message(f"✅ Hello, {interaction.user.mention}!", ephemeral=True)
 
-@bot.tree.command(name="ticket-internal", description="Creates a ticket without pinging anybody!")
-async def hello_command(interaction: discord.Interaction):
+@bot.tree.command(name="ticket_internal", description="Creates a ticket without pinging anybody!")
+async def ticket_internal(interaction: discord.Interaction):
         """Creates a private thread and pings the correct role."""
         now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
