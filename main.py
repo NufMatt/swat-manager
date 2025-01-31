@@ -46,7 +46,7 @@ def initialize_database():
             recruiter_id TEXT NOT NULL,
             starttime TEXT NOT NULL,
             endtime TEXT,
-            embed_id TEXT NOT NULL,
+            embed_id TEXT,
             ingame_name TEXT NOT NULL,
             user_id TEXT NOT NULL,
             region TEXT NOT NULL,
@@ -452,6 +452,67 @@ class RequestActionView(discord.ui.View):
         if user_id_str in pending_requests:
             del pending_requests[user_id_str]
             save_requests()
+
+# Command to add a trainee
+@app_commands.describe(
+    user_id="User's Discord ID",
+    ingame_name="Exact in-game name",
+    region="Region of the user (NA, EU, or SEA)",
+    role_type="What role"
+)
+@app_commands.choices(
+    region=[
+        app_commands.Choice(name="NA", value="NA"),
+        app_commands.Choice(name="EU", value="EU"),
+        app_commands.Choice(name="SEA", value="SEA")
+    ],
+    role_type=[
+        app_commands.Choice(name="cadet", value="cadet"),
+        app_commands.Choice(name="trainee", value="trainee")
+    ]
+)
+@bot.tree.command(name="force_add", description="Manually add a existing trainee / cadet thread to the database!")
+async def add_trainee_command(
+    interaction: discord.Interaction, 
+    user_id: str, 
+    ingame_name: str, 
+    region: app_commands.Choice[str], 
+    role_type: app_commands.Choice[str]
+):
+    thread = interaction.channel
+    """Forcibly add a user as trainee and create a voting thread."""
+    user_id = int(user_id)
+    recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+    if recruiter_role not in interaction.user.roles:
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+        return
+    
+    selected_region = region.value
+    selected_role = role_type.value
+    thread.id
+    # Example: Add trainee to the database (implement your logic here)
+    # db.add_trainee(user_id, ingame_name, selected_region, selected_role)
+    
+    start_time = get_rounded_time()
+    end_time   = start_time + timedelta(days=7)
+
+    validate_entry = add_entry(
+        thread_id=thread.id,
+        recruiter_id=str(interaction.user.id),
+        starttime=start_time,
+        endtime=end_time,
+        role_type=str(selected_role),
+        embed_id=None,
+        ingame_name=ingame_name,
+        user_id=str(user_id),
+        region=region.value
+    )
+    if validate_entry:
+        await interaction.response.send_message(f"✅ Successfully added user ID `{user_id}` with in-game name `{ingame_name}` as `{selected_role}` in region `{selected_region}`.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"❌ Error when adding user ID `{user_id}` with in-game name `{ingame_name}` as `{selected_role}` in region `{selected_region}`.", ephemeral=True)
+    
+    
 
 # --------------------------------------
 #            MODAL CLASSES
@@ -1083,14 +1144,44 @@ async def extend_thread_command(interaction: discord.Interaction, days: int):
     old_end = datetime.strptime(data["endtime"], "%Y-%m-%d %H:%M:%S.%f")
     new_end = old_end + timedelta(days=days)
     if update_endtime(interaction.channel.id, new_end):
-        msg = await interaction.channel.fetch_message(int(data["embed_id"]))
-        new_embed = await create_voting_embed(data["starttime"], new_end, int(data["recruiter_id"]), data["region"], data["ingame_name"], extended=True)
-        await msg.edit(embed=new_embed)
+        
+        if data["embed_id"]:
+            msg = await interaction.channel.fetch_message(int(data["embed_id"]))
+            new_embed = await create_voting_embed(data["starttime"], new_end, int(data["recruiter_id"]), data["region"], data["ingame_name"], extended=True)
+            await msg.edit(embed=new_embed)
 
         embed = discord.Embed(description="This " + str(data['role_type']) + " voting has been extended by " + str(days) + " days!", colour=0xf9c74f)
         await interaction.response.send_message(embed=embed)
     else:
         await interaction.response.send_message("Failed to update endtime.", ephemeral=True)
+
+@bot.tree.command(name="resend_voting", description="Resends a voting embed!")
+async def promote_user_command(interaction: discord.Interaction):
+    """Promote a user from Trainee->Cadet or Cadet->SWAT, closing the old thread and creating a new one if needed."""
+    recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+    if recruiter_role not in interaction.user.roles:
+        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+        return
+
+    if not isinstance(interaction.channel, discord.Thread):
+        await interaction.response.send_message("This command must be used in a thread.", ephemeral=True)
+        return
+
+    try:
+        data = get_entry(interaction.channel.id)
+        if not data:
+            await interaction.response.send_message("No DB entry for this thread!", ephemeral=True)
+            return
+        thread = interaction.channel
+        voting_embed = await create_voting_embed(data["starttime"], data["endtime"], data["recruiter_id"], data["region"], data["ingame_name"])
+        embed_msg = await thread.send(embed=voting_embed)
+        await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
+        await embed_msg.add_reaction("❔")
+        await embed_msg.add_reaction("<:minus_one:1334498485390544989>")
+    
+        await interaction.response.send_message("✅ Vothing embed has been sent again", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message("❌ Error occured: " + str(e), ephemeral=True)
 
 # --------------------------------------
 #        SHUTDOWN AND BOT LAUNCH
