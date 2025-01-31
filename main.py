@@ -1193,7 +1193,7 @@ async def ticket_internal(interaction: discord.Interaction):
         now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
         if not leadership_role or (leadership_role not in interaction.user.roles):
-            await interaction.response.send_message("❌ You do not have permission to ignore this request.", ephemeral=True)
+            await interaction.response.send_message("❌ You do not have permission to open a private ticket.", ephemeral=True)
             return
         
         # Create a private thread in the same channel
