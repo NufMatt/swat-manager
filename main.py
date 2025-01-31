@@ -39,7 +39,7 @@ EMBED_FILE   = "tickets_embed.json"
 EMBED_TITLE  = "Open a Ticket Here"
 
 # --------------------------------------
-#            DATABASE SETUP
+#      DATABASE SETUP RECRUITMENT
 # --------------------------------------
 def initialize_database():
     """Initialize the SQLite database and create the entries table if it doesn't exist."""
@@ -190,6 +190,52 @@ def is_user_in_database(user_id: int) -> bool:
         if conn:
             conn.close()
 
+# -----------------------
+# DATABASE SETUP TICKET
+# -----------------------
+def init_ticket_db():
+    conn = sqlite3.connect("tickets.db")
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS tickets (
+            thread_id TEXT PRIMARY KEY,
+            user_id   TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            ticket_type TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def add_ticket(thread_id: str, user_id: str, created_at: str, ticket_type: str):
+    conn = sqlite3.connect("tickets.db")
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO tickets (thread_id, user_id, created_at, ticket_type)
+        VALUES (?, ?, ?, ?)
+    """, (thread_id, user_id, created_at, ticket_type))
+    conn.commit()
+    conn.close()
+
+def get_ticket_info(thread_id: str):
+    conn = sqlite3.connect("tickets.db")
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT thread_id, user_id, created_at, ticket_type FROM tickets
+        WHERE thread_id = ?
+    """, (thread_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row  # (thread_id, user_id, created_at, ticket_type)
+
+def remove_ticket(thread_id: str):
+    conn = sqlite3.connect("tickets.db")
+    cur = conn.cursor()
+    cur.execute("DELETE FROM tickets WHERE thread_id = ?", (thread_id,))
+    conn.commit()
+    conn.close()
+
+init_ticket_db()
 # --------------------------------------
 #            BOT SETUP
 # --------------------------------------
@@ -345,7 +391,7 @@ async def create_voting_embed(start_time, end_time, recruiter: int, region, inga
         return discord.Embed(description="❌ Error creating voting embed.", color=0xff0000)
 
 # --------------------------------------
-#   PERSISTENT VIEW & RELATED CLASSES
+#   PERSISTENT VIEW & RELATED CLASSES -> THREAD MANAGMENT
 # --------------------------------------
 class TraineeView(discord.ui.View):
     """Persistent view for the main management embed buttons."""
@@ -672,6 +718,55 @@ async def clear_requests_command(interaction: discord.Interaction):
 
     await interaction.followup.send("✅ All pending requests have been **cleared**!", ephemeral=True)
 
+# -----------------------
+# PERSISTENT VIEW
+# -----------------------
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    
+    @discord.ui.button(label="Leadership", style=discord.ButtonStyle.primary, custom_id="leadership_ticket")
+    async def leadership_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "leadership")
+
+    @discord.ui.button(label="Recruiters", style=discord.ButtonStyle.secondary, custom_id="recruiter_ticket")
+    async def recruiter_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "recruiters")
+
+    async def create_ticket(self, interaction: discord.Interaction, ticket_type: str):
+        """Creates a private thread and pings the correct role."""
+        role_id = LEADERSHIP_ID if ticket_type == "leadership" else RECRUITER_ID
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        
+        # Create a private thread in the same channel
+        channel = interaction.channel
+        thread_name = f"[{ticket_type.capitalize()}] - {interaction.user.display_name}"
+        thread = await channel.create_thread(
+            name=thread_name,
+            type=discord.ChannelType.private_thread,
+            invitable=False
+        )
+
+        # Ping the appropriate role, then send an embed
+        await thread.send(f"<@&{role_id}> <@{interaction.user.id}>")
+        embed = discord.Embed(
+            title="What can we do for you?",
+            description="Please describe your issue or request below.",
+            color=discord.Color.blue()
+        )
+        await thread.send(embed=embed)
+
+        # Save the ticket info
+        add_ticket(
+            thread_id=str(thread.id),
+            user_id=str(interaction.user.id),
+            created_at=now_str,
+            ticket_type=ticket_type
+        )
+
+        # Acknowledge to the user
+        await interaction.response.send_message("✅ Your ticket has been created!", ephemeral=True)
+
 # --------------------------------------
 #            MODAL CLASSES
 # --------------------------------------
@@ -932,7 +1027,8 @@ async def on_ready():
     
     load_requests()  # Load any pending requests from disk
     bot.add_view(TraineeView())  # Register the persistent view
-
+    bot.add_view(TicketView())
+    
     global embed_message_id
     if os.path.exists(EMBED_ID_FILE):
         try:
@@ -960,6 +1056,11 @@ async def on_ready():
         check_expired_endtimes.start()
     except Exception as e:
         print(f"❌ Error starting check_expired_endtimes task: {e}")
+    try:
+        ensure_ticket_embed.start()
+    except Exception as e:
+        print(f"❌ Error starting ensure_ticket_embed task: {e}")
+        
 
 @bot.tree.command(name="hello", description="Say hello to the bot")
 async def hello_command(interaction: discord.Interaction):
@@ -1278,8 +1379,10 @@ async def check_expired_endtimes():
         if conn:
             conn.close()
 
+
+
 # --------------------------------------
-#     STAFF / MANAGEMENT COMMANDS
+#     STAFF / MANAGEMENT COMMANDS -> Threads
 # --------------------------------------
 @app_commands.describe(
     user_id="User's Discord ID",
@@ -1671,6 +1774,54 @@ async def resend_voting_command(interaction: discord.Interaction):
         await interaction.response.send_message("✅ Voting embed has been resent.", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(f"❌ Error occurred: {e}", ephemeral=True)
+
+# -----------------------
+# COMMANDS
+# -----------------------
+@bot.tree.command(name="ticket_info", description="Show info about the current ticket thread.")
+async def ticket_info(interaction: discord.Interaction):
+    # Instead of interaction.response.defer(), we'll just respond once with a message
+    if not isinstance(interaction.channel, discord.Thread):
+        await interaction.response.send_message("❌ Use this command in the ticket thread.", ephemeral=True)
+        return
+
+    ticket_data = get_ticket_info(str(interaction.channel.id))
+    if not ticket_data:
+        await interaction.response.send_message("❌ This thread is not a registered ticket.", ephemeral=True)
+        return
+
+    thread_id, user_id, created_at, ticket_type = ticket_data
+    embed = discord.Embed(title="Ticket Information", color=discord.Color.blue())
+    embed.add_field(name="Thread ID", value=thread_id, inline=False)
+    embed.add_field(name="User", value=f"<@{user_id}>", inline=False)
+    embed.add_field(name="Created At (UTC)", value=created_at, inline=False)
+    embed.add_field(name="Ticket Type", value=ticket_type, inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="ticket_close", description="Close the current ticket.")
+async def ticket_close(interaction: discord.Interaction):
+    # Instead of interaction.response.defer(), we'll just respond once with a message
+    if not isinstance(interaction.channel, discord.Thread):
+        await interaction.response.send_message("❌ Use this command in the ticket thread.", ephemeral=True)
+        return
+
+    ticket_data = get_ticket_info(str(interaction.channel.id))
+    if not ticket_data:
+        await interaction.response.send_message("❌ This thread is not a registered ticket.", ephemeral=True)
+        return
+
+    # Remove from DB
+    remove_ticket(str(interaction.channel.id))
+
+    # Lock and archive
+    embed = discord.Embed(
+        title="Ticket Closed",
+        description=f"<@{interaction.user.id}> has closed this ticket. No more messages can be sent.",
+        color=discord.Color.red()
+    )
+    await interaction.response.send_message(embed=embed)
+    await interaction.channel.edit(locked=True, archived=True)
+
 
 # --------------------------------------
 #        SHUTDOWN AND BOT LAUNCH
