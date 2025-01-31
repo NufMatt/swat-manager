@@ -893,7 +893,7 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
         await channel.send(f"<@{recruiter_id}>")
         await channel.send(embed=embed, view=view)
 
-        await interaction.followup.send("✅ Your trainee role request has been submitted!", ephemeral=True)
+        await interaction.followup.send("✅ Your trainee role request has been submitted! Please allow us some time to accept this request.", ephemeral=True)
 
     except Exception as e:
         await interaction.followup.send(f"❌ Error finalizing trainee request: {e}", ephemeral=True)
@@ -929,7 +929,7 @@ class DenyReasonModal(discord.ui.Modal):
                     f"```\n{reason_text}\n```"
                 )
             except discord.Forbidden:
-                print(f"❌ Could not DM user {self.user_id}; user may have DMs blocked.")
+                print("❌ Could not DM user " + str(self.user_id) + "; user may have DMs blocked.")
 
         # 2) Update the existing embed (change color, add fields, remove buttons)
         if interaction.message and interaction.message.embeds:
