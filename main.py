@@ -316,7 +316,7 @@ async def update_recruiters():
     except Exception as e:
         print(f"❌ Error in update_recruiters: {e}")
 
-async def set_user_nickname(member: discord.Member, role_label: str, username: str):
+async def set_user_nickname(member: discord.Member, role_label: str, username: str = None):
     """Remove any trailing [TRAINEE/Cadet/SWAT] bracketed text and set the new bracket."""
     try:
         base_nick = member.nick if member.nick else member.name
@@ -464,7 +464,7 @@ class RequestActionView(discord.ui.View):
 
                 member = guild.get_member(self.user_id)
                 if member:
-                    await set_user_nickname(member, "trainee")
+                    await set_user_nickname(member, "trainee", self.ingame_name)
                     trainee_role_obj = guild.get_role(TRAINEE_ROLE)
 
                     if trainee_role_obj:
