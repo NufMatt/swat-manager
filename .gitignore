@@ -6,7 +6,7 @@ tickets_embed.json
 requests.json
 embed.txt
 config_testing.py
-token_test.txt
+token-test.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

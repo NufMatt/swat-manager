@@ -10,7 +10,7 @@ from typing import Optional, Dict
 import re
 from messages import trainee_messages, cadet_messages, welcome_to_swat
 import random
-from config import GUILD_ID, TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL, TRAINEE_CHAT_CHANNEL, SWAT_CHAT_CHANNEL, TRAINEE_ROLE, CADET_ROLE, SWAT_ROLE_ID, OFFICER_ROLE_ID, RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID, TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE
+from config_testing import GUILD_ID, TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL, TRAINEE_CHAT_CHANNEL, SWAT_CHAT_CHANNEL, TRAINEE_ROLE, CADET_ROLE, SWAT_ROLE_ID, OFFICER_ROLE_ID, RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID, TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE, PLUS_ONE_EMOJI, MINUS_ONE_EMOJI
 
 # --------------------------------------
 #               CONSTANTS
@@ -319,7 +319,10 @@ async def update_recruiters():
 async def set_user_nickname(member: discord.Member, role_label: str, username: str = None):
     """Remove any trailing [TRAINEE/Cadet/SWAT] bracketed text and set the new bracket."""
     try:
-        base_nick = member.nick if member.nick else member.name
+        if username:
+            base_nick = username
+        else:
+            base_nick = member.nick if member.nick else member.name
         temp_name = re.sub(r'(?:\s*\[(?:CADET|TRAINEE|SWAT)\])+$', '', base_nick, flags=re.IGNORECASE)
         await member.edit(nick=f"{temp_name} [{role_label.upper()}]")
     except discord.Forbidden:
@@ -432,6 +435,7 @@ class RequestActionView(discord.ui.View):
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="request_accept")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        
         if not recruiter_role or recruiter_role not in interaction.user.roles:
             await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
             return
@@ -542,12 +546,18 @@ class RequestActionView(discord.ui.View):
                         except discord.HTTPException as e:
                             await interaction.response.send_message(f"❌ HTTP Error creating thread: {e}", ephemeral=True)
                             return
-
-                        voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id, self.region, self.ingame_name)
-                        embed_msg = await thread.send(embed=voting_embed)
-                        await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
-                        await embed_msg.add_reaction("❔")
-                        await embed_msg.add_reaction("<:minus_one:1334498485390544989>")
+                        try:
+                            voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id, self.region, self.ingame_name)
+                            embed_msg = await thread.send(embed=voting_embed)
+                            await embed_msg.add_reaction(PLUS_ONE_EMOJI)
+                            await embed_msg.add_reaction("❔")
+                            await embed_msg.add_reaction(MINUS_ONE_EMOJI)
+                        except discord.Forbidden:
+                            await interaction.response.send_message("❌ Forbidden: Cannot create embed.", ephemeral=True)
+                            return
+                        except discord.HTTPException as e:
+                            await interaction.response.send_message(f"❌ HTTP Error creating embed: {e}", ephemeral=True)
+                            return
 
                         add_ok = add_entry(
                             thread_id=thread.id,
@@ -633,7 +643,7 @@ class RequestActionView(discord.ui.View):
 
             user_id_str = str(self.user_id)
             if user_id_str in pending_requests:
-                del pending_requests[user_id_str]
+                # del pending_requests[user_id_str]
                 save_requests()
         modal = DenyReasonModal(self.user_id)
         await interaction.response.send_modal(modal)
@@ -654,8 +664,9 @@ class CloseThreadView(discord.ui.View):
             await interaction.response.send_message("❌ No ticket data found for this thread.", ephemeral=True)
             return
 
-        if interaction.user.id != int(ticket_data[1]):  # Assuming ticket_data[1] is user_id
-            await interaction.response.send_message("❌ You do not have permission to close this thread.", ephemeral=True)
+        leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+        if not leadership_role or (leadership_role not in interaction.user.roles):
+            await interaction.response.send_message("❌ You do not have permission to close this ticket.", ephemeral=True)
             return
 
         try:
@@ -708,8 +719,8 @@ async def force_add(
     try:
         thread = interaction.channel
         user_id_int = int(user_id)
-        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
-        if not recruiter_role or (recruiter_role not in interaction.user.roles):
+        leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+        if not leadership_role or (leadership_role not in interaction.user.roles):
             await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
             return
         
@@ -919,7 +930,7 @@ class DenyReasonModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         reason_text = self.reason.value
-
+        await interaction.response.defer()
         # 1) Attempt to DM the user
         user = interaction.client.get_user(self.user_id)
         if user:
@@ -946,7 +957,7 @@ class DenyReasonModal(discord.ui.Modal):
             save_requests()
 
         # 4) Acknowledge the action
-        await interaction.response.send_message("✅ Denial reason submitted. User has been notified.", ephemeral=True)
+        await interaction.followup.send("✅ Denial reason submitted. User has been notified.", ephemeral=True)
 
 
 
@@ -1518,9 +1529,9 @@ async def check_expired_endtimes():
                     voting_embed.add_field(name="Thread managed by:", value=f"<@{recruiter_id}>", inline=False)
                     await thread.send(f"<@&{SWAT_ROLE_ID}> It's time for another cadet voting!⌛")
                     embed_msg = await thread.send(embed=voting_embed)
-                    await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
+                    await embed_msg.add_reaction(PLUS_ONE_EMOJI)
                     await embed_msg.add_reaction("❔")
-                    await embed_msg.add_reaction("<:minus_one:1334498485390544989>")
+                    await embed_msg.add_reaction(MINUS_ONE_EMOJI)
 
                 cursor.execute(
                     """
@@ -1601,8 +1612,8 @@ async def add_trainee_command_ephemeral(
         await interaction.response.send_message("❌ Invalid user ID.", ephemeral=True)
         return
 
-    recruiter_role = interaction.guild.get_role(RECRUITER_ID)
-    if not recruiter_role or recruiter_role not in interaction.user.roles:
+    leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+    if not leadership_role or leadership_role not in interaction.user.roles:
         await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
         return
 
@@ -1655,9 +1666,9 @@ async def add_trainee_command_ephemeral(
 
             voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id, region.value, ingame_name)
             embed_msg = await thread.send(embed=voting_embed)
-            await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
+            await embed_msg.add_reaction(PLUS_ONE_EMOJI)
             await embed_msg.add_reaction("❔")
-            await embed_msg.add_reaction("<:minus_one:1334498485390544989>")
+            await embed_msg.add_reaction(MINUS_ONE_EMOJI)
 
             add_ok = add_entry(
                 thread_id=thread.id,
@@ -1843,9 +1854,9 @@ async def promote_user_command(interaction: discord.Interaction):
 
                 voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id, data["region"], ingame_name)
                 embed_msg = await thread.send(embed=voting_embed)
-                await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
+                await embed_msg.add_reaction(PLUS_ONE_EMOJI)
                 await embed_msg.add_reaction("❔")
-                await embed_msg.add_reaction("<:minus_one:1334498485390544989>")
+                await embed_msg.add_reaction(MINUS_ONE_EMOJI)
 
                 swat_chat = guild.get_channel(SWAT_CHAT_CHANNEL)
                 if swat_chat:
@@ -1961,9 +1972,9 @@ async def resend_voting_command(interaction: discord.Interaction):
     
         voting_embed = await create_voting_embed(data["starttime"], data["endtime"], data["recruiter_id"], data["region"], data["ingame_name"])
         embed_msg = await interaction.channel.send(embed=voting_embed)
-        await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
+        await embed_msg.add_reaction(PLUS_ONE_EMOJI)
         await embed_msg.add_reaction("❔")
-        await embed_msg.add_reaction("<:minus_one:1334498485390544989>")
+        await embed_msg.add_reaction(MINUS_ONE_EMOJI)
 
         await interaction.response.send_message("✅ Voting embed has been resent.", ephemeral=True)
     except Exception as e:
@@ -2025,9 +2036,9 @@ async def early_vote(interaction: discord.Interaction):
                     voting_embed.add_field(name="Early voting issued by:", value=f"<@{interaction.user.id}>", inline=True)
                     await thread.send(f"<@&{SWAT_ROLE_ID}> It's time for another cadet voting!⌛")
                     embed_msg = await thread.send(embed=voting_embed)
-                    await embed_msg.add_reaction("<:plus_one:1334498534187208714>")
+                    await embed_msg.add_reaction(PLUS_ONE_EMOJI)
                     await embed_msg.add_reaction("❔")
-                    await embed_msg.add_reaction("<:minus_one:1334498485390544989>")
+                    await embed_msg.add_reaction(MINUS_ONE_EMOJI)
 
                     cursor.execute(
                         """
