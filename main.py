@@ -1734,6 +1734,12 @@ async def lock_thread_command(interaction: discord.Interaction):
         return
     
     await interaction.response.defer()
+    channel_name = "❌ " + str(interaction.channel.name)
+    try:
+        await interaction.channel.edit(name=channel_name)
+    except:
+        print("Reanming thread failed")
+
     await close_thread(interaction, interaction.channel)
 
     guild = bot.get_guild(GUILD_ID)
@@ -1791,6 +1797,8 @@ async def promote_user_command(interaction: discord.Interaction):
     removed = remove_entry(str(interaction.channel.id))
     if removed:
         try:
+            channel_name = "✅ " + str(interaction.channel.name)
+            await interaction.channel.edit(name=channel_name)
             await interaction.channel.edit(locked=True, archived=True)
         except discord.Forbidden:
             await interaction.followup.send("❌ Forbidden: Cannot lock/archive thread.", ephemeral=True)
