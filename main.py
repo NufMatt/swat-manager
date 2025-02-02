@@ -10,7 +10,7 @@ from typing import Optional, Dict
 import re
 from messages import trainee_messages, cadet_messages, welcome_to_swat
 import random
-from config import GUILD_ID, TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL, TRAINEE_CHAT_CHANNEL, SWAT_CHAT_CHANNEL, TRAINEE_ROLE, CADET_ROLE, SWAT_ROLE_ID, OFFICER_ROLE_ID, RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID, TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE, PLUS_ONE_EMOJI, MINUS_ONE_EMOJI
+from config_testing import GUILD_ID, TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL, TRAINEE_CHAT_CHANNEL, SWAT_CHAT_CHANNEL, TRAINEE_ROLE, CADET_ROLE, SWAT_ROLE_ID, OFFICER_ROLE_ID, RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID, TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE, PLUS_ONE_EMOJI, MINUS_ONE_EMOJI
 
 # --------------------------------------
 #               CONSTANTS
@@ -1734,6 +1734,12 @@ async def lock_thread_command(interaction: discord.Interaction):
         return
     
     await interaction.response.defer()
+    channel_name = "❌ " + str(interaction.channel.name)
+    try:
+        await interaction.channel.edit(name=channel_name)
+    except:
+        print("Reanming thread failed")
+
     await close_thread(interaction, interaction.channel)
 
     guild = bot.get_guild(GUILD_ID)
@@ -1791,6 +1797,8 @@ async def promote_user_command(interaction: discord.Interaction):
     removed = remove_entry(str(interaction.channel.id))
     if removed:
         try:
+            channel_name = "✅ " + str(interaction.channel.name)
+            await interaction.channel.edit(name=channel_name)
             await interaction.channel.edit(locked=True, archived=True)
         except discord.Forbidden:
             await interaction.followup.send("❌ Forbidden: Cannot lock/archive thread.", ephemeral=True)
