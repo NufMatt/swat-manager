@@ -190,6 +190,8 @@ def init_ticket_db():
     conn.commit()
     conn.close()
 
+active_tickets = {}  # Dictionary to keep track of active tickets
+
 def add_ticket(thread_id: str, user_id: str, created_at: str, ticket_type: str):
     conn = sqlite3.connect("tickets.db")
     cur = conn.cursor()
@@ -199,6 +201,13 @@ def add_ticket(thread_id: str, user_id: str, created_at: str, ticket_type: str):
     """, (thread_id, user_id, created_at, ticket_type))
     conn.commit()
     conn.close()
+
+    # Update the bot's memory
+    active_tickets[thread_id] = {
+        "user_id": user_id,
+        "created_at": created_at,
+        "ticket_type": ticket_type
+    }
 
 def get_ticket_info(thread_id: str):
     conn = sqlite3.connect("tickets.db")
@@ -857,6 +866,24 @@ class TicketView(discord.ui.View):
 # --------------------------------------
 #            MODAL CLASSES
 # --------------------------------------
+async def load_existing_tickets():
+    """Load existing tickets from the database and re-register them."""
+    conn = sqlite3.connect("tickets.db")
+    cur = conn.cursor()
+    cur.execute("SELECT thread_id, user_id, created_at, ticket_type FROM tickets")
+    rows = cur.fetchall()
+    conn.close()
+
+    for row in rows:
+        thread_id, user_id, created_at, ticket_type = row
+        thread = bot.get_channel(int(thread_id))
+        if thread and isinstance(thread, discord.Thread):
+            # Re-register the ticket in the bot's memory
+            add_ticket(thread_id, user_id, created_at, ticket_type)
+            print(f"✅ Re-registered ticket: {thread_id}")
+        else:
+            print(f"❌ Could not find thread with ID: {thread_id}")
+
 async def finalize_trainee_request(interaction: discord.Interaction, user_id_str: str):
     """Finalize the trainee request after selections."""
     try:
@@ -1192,7 +1219,7 @@ async def on_ready():
         ensure_ticket_embed.start()
     except Exception as e:
         print(f"❌ Error starting ensure_ticket_embed task: {e}")
-        
+    await load_existing_tickets()
 
 @bot.tree.command(name="hello", description="Say hello to the bot")
 async def hello_command(interaction: discord.Interaction):
@@ -2073,38 +2100,39 @@ async def early_vote(interaction: discord.Interaction):
 # -----------------------
 @bot.tree.command(name="ticket_info", description="Show info about the current ticket thread.")
 async def ticket_info(interaction: discord.Interaction):
-    # Instead of interaction.response.defer(), we'll just respond once with a message
     if not isinstance(interaction.channel, discord.Thread):
         await interaction.response.send_message("❌ Use this command in the ticket thread.", ephemeral=True)
         return
 
-    ticket_data = get_ticket_info(str(interaction.channel.id))
+    thread_id = str(interaction.channel.id)
+    ticket_data = active_tickets.get(thread_id)
     if not ticket_data:
         await interaction.response.send_message("❌ This thread is not a registered ticket.", ephemeral=True)
         return
 
-    thread_id, user_id, created_at, ticket_type = ticket_data
     embed = discord.Embed(title="Ticket Information", color=discord.Color.blue())
     embed.add_field(name="Thread ID", value=thread_id, inline=False)
-    embed.add_field(name="User", value=f"<@{user_id}>", inline=False)
-    embed.add_field(name="Created At (UTC)", value=created_at, inline=False)
-    embed.add_field(name="Ticket Type", value=ticket_type, inline=False)
+    embed.add_field(name="User", value=f"<@{ticket_data['user_id']}>", inline=False)
+    embed.add_field(name="Created At (UTC)", value=ticket_data["created_at"], inline=False)
+    embed.add_field(name="Ticket Type", value=ticket_data["ticket_type"], inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="ticket_close", description="Close the current ticket.")
 async def ticket_close(interaction: discord.Interaction):
-    # Instead of interaction.response.defer(), we'll just respond once with a message
     if not isinstance(interaction.channel, discord.Thread):
         await interaction.response.send_message("❌ Use this command in the ticket thread.", ephemeral=True)
         return
 
-    ticket_data = get_ticket_info(str(interaction.channel.id))
-    if not ticket_data:
+    thread_id = str(interaction.channel.id)
+    if thread_id not in active_tickets:
         await interaction.response.send_message("❌ This thread is not a registered ticket.", ephemeral=True)
         return
 
     # Remove from DB
-    remove_ticket(str(interaction.channel.id))
+    remove_ticket(thread_id)
+
+    # Remove from bot's memory
+    del active_tickets[thread_id]
 
     # Lock and archive
     embed = discord.Embed(title=f"Ticket closed by {interaction.user.nick}",
@@ -2112,8 +2140,6 @@ async def ticket_close(interaction: discord.Interaction):
     embed.set_footer(text="🔒This ticket is locked now!")
     await interaction.response.send_message(embed=embed)
     await interaction.channel.edit(locked=True, archived=True)
-
-
 # --------------------------------------
 #        SHUTDOWN AND BOT LAUNCH
 # --------------------------------------
