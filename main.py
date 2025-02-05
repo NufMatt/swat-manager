@@ -196,7 +196,7 @@ def add_ticket(thread_id: str, user_id: str, created_at: str, ticket_type: str):
     conn = sqlite3.connect("tickets.db")
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO tickets (thread_id, user_id, created_at, ticket_type)
+        INSERT OR IGNORE INTO tickets (thread_id, user_id, created_at, ticket_type)
         VALUES (?, ?, ?, ?)
     """, (thread_id, user_id, created_at, ticket_type))
     conn.commit()
