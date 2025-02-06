@@ -8,9 +8,10 @@ from datetime import datetime, timedelta
 import sqlite3
 from typing import Optional, Dict
 import re
-from messages import trainee_messages, cadet_messages, welcome_to_swat
+import traceback
+from messages import trainee_messages, cadet_messages, welcome_to_swat, OPEN_TICKET_EMBED_TEXT
 import random
-from config import GUILD_ID, TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL, TRAINEE_CHAT_CHANNEL, SWAT_CHAT_CHANNEL, TRAINEE_ROLE, CADET_ROLE, SWAT_ROLE_ID, OFFICER_ROLE_ID, RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID, TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE, PLUS_ONE_EMOJI, MINUS_ONE_EMOJI
+from config_testing import GUILD_ID, TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL, TRAINEE_CHAT_CHANNEL, SWAT_CHAT_CHANNEL, TRAINEE_ROLE, CADET_ROLE, SWAT_ROLE_ID, OFFICER_ROLE_ID, RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID, TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE, PLUS_ONE_EMOJI, MINUS_ONE_EMOJI, LEAD_BOT_DEVELOPER_ID, LEAD_BOT_DEVELOPER_EMOJI, INTEGRATIONS_MANAGER, RECRUITER_EMOJI, LEADERSHIP_EMOJI
 
 # --------------------------------------
 #               CONSTANTS
@@ -298,6 +299,9 @@ def create_embed() -> discord.Embed:
     )
     return embed
 
+def is_in_correct_guild(interaction: discord.Interaction) -> bool:
+    return interaction.guild_id == GUILD_ID
+
 async def update_recruiters():
     """Update the list of recruiters from the guild."""
     try:
@@ -366,7 +370,7 @@ async def create_voting_embed(start_time, end_time, recruiter: int, region, inga
         embed = discord.Embed(
             description=(
                 "SWAT, please express your vote below.\n"
-                "Use <:plus_one:1334498534187208714>, ❔, or <:minus_one:1334498485390544989> accordingly."
+                f"Use {PLUS_ONE_EMOJI}, ❔, or {MINUS_ONE_EMOJI} accordingly."
             ),
             color=0x000000
         )
@@ -398,6 +402,10 @@ class TraineeView(discord.ui.View):
         user_id_str = str(interaction.user.id)
         
         # Checks
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
+    
         if user_id_str in pending_requests:
             await interaction.response.send_message("❌ You already have an open request.", ephemeral=True)
             return
@@ -413,6 +421,10 @@ class TraineeView(discord.ui.View):
     @discord.ui.button(label="Request Name Change", style=discord.ButtonStyle.secondary, custom_id="request_name_change")
     async def request_name_change(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id_str = str(interaction.user.id)
+        
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
         
         if user_id_str in pending_requests:
             await interaction.response.send_message("❌ You already have an open request.", ephemeral=True)
@@ -444,6 +456,10 @@ class RequestActionView(discord.ui.View):
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="request_accept")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
         
         if not recruiter_role or recruiter_role not in interaction.user.roles:
             await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
@@ -600,6 +616,9 @@ class RequestActionView(discord.ui.View):
 
     @discord.ui.button(label="Ignore", style=discord.ButtonStyle.danger, custom_id="request_ignore")
     async def ignore_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
         try:
             if self.request_type in ["name_change", "other"]:
                 leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
@@ -629,10 +648,15 @@ class RequestActionView(discord.ui.View):
     @discord.ui.button(label="Deny w/Reason", style=discord.ButtonStyle.danger, custom_id="request_deny_reason")
     async def deny_with_reason(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Opens a modal so the recruiter/leadership can specify a reason and DM the user."""
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return        
+
         # 1) Check role/permission if you want
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
         leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
         # Example logic: If it's a name change or "other" request, only leadership can deny with reason:
+
         if self.request_type in ["name_change", "other"]:
             if not leadership_role or (leadership_role not in interaction.user.roles):
                 await interaction.response.send_message("❌ You do not have permission to deny this request.", ephemeral=True)
@@ -664,17 +688,29 @@ class CloseThreadView(discord.ui.View):
     @discord.ui.button(label="Close Thread", style=discord.ButtonStyle.danger, custom_id="close_thread")
     async def close_thread_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         thread = interaction.channel
-        user = interaction.user
+            
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
 
         # Optional: Restrict who can close the thread (e.g., only the ticket creator or specific roles)
         # Example: Only the user who opened the ticket can close it
         ticket_data = get_ticket_info(str(thread.id))
+        print(ticket_data)
         if not ticket_data:
             await interaction.response.send_message("❌ No ticket data found for this thread.", ephemeral=True)
             return
 
-        leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
-        if not leadership_role or (leadership_role not in interaction.user.roles):
+        if ticket_data[3] == "recruiters":
+            closing_role = interaction.guild.get_role(RECRUITER_ID)
+        elif ticket_data[3] == "botdeveloper":
+            closing_role = interaction.guild.get_role(LEAD_BOT_DEVELOPER_ID)
+        elif ticket_data[3] == "loa":
+            closing_role = interaction.guild.get_role(LEADERSHIP_ID)
+        else:
+            closing_role = interaction.guild.get_role(LEADERSHIP_ID)
+        
+        if not closing_role or (closing_role not in interaction.user.roles and interaction.user.id != int(ticket_data[1])):
             await interaction.response.send_message("❌ You do not have permission to close this ticket.", ephemeral=True)
             return
 
@@ -685,7 +721,7 @@ class CloseThreadView(discord.ui.View):
                 return
 
             remove_ticket(str(thread.id))
-            embed = discord.Embed(title=f"Ticket closed by {interaction.user.nick}",
+            embed = discord.Embed(title=f"Ticket closed by {interaction.user.nick if interaction.user.nick else interaction.user.name}",
                       colour=0xf51616)
             embed.set_footer(text="🔒This ticket is locked now!")
             await interaction.response.send_message(embed=embed)
@@ -725,6 +761,10 @@ async def force_add(
     role_type: app_commands.Choice[str]
 ):
     """Forcibly add a user as trainee or cadet, linking this thread to the DB."""
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+        return
+
     try:
         thread = interaction.channel
         user_id_int = int(user_id)
@@ -766,6 +806,10 @@ async def force_add(
 
 @bot.tree.command(name="list_requests", description="Lists the currently stored pending requests.")
 async def list_requests(interaction: discord.Interaction):
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+        return
+    
     leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
     if not leadership_role or (leadership_role not in interaction.user.roles):
         await interaction.response.send_message("❌ You do not have permission to list requests.", ephemeral=True)
@@ -800,6 +844,9 @@ async def list_requests(interaction: discord.Interaction):
 
 @bot.tree.command(name="clear_requests", description="Clears the entire pending requests list.")
 async def clear_requests(interaction: discord.Interaction):
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+        return
     leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
     if not leadership_role or (leadership_role not in interaction.user.roles):
         await interaction.response.send_message("❌ You do not have permission to clear requests.", ephemeral=True)
@@ -826,10 +873,28 @@ class TicketView(discord.ui.View):
     @discord.ui.button(label="Recruiters", style=discord.ButtonStyle.secondary, custom_id="recruiter_ticket")
     async def recruiter_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_ticket(interaction, "recruiters")
+        
+    @discord.ui.button(label="Lead Bot Developer", style=discord.ButtonStyle.secondary, custom_id="botdeveloper_ticket")
+    async def botdeveloper_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "botdeveloper")
+    
+    @discord.ui.button(label="LOA", style=discord.ButtonStyle.secondary, custom_id="loa_ticket")
+    async def loa_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(LOAModal())
 
     async def create_ticket(self, interaction: discord.Interaction, ticket_type: str):
         """Creates a private thread and pings the correct role."""
-        role_id = LEADERSHIP_ID if ticket_type == "leadership" else RECRUITER_ID
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
+        
+        if ticket_type == "leadership":
+            role_id = LEADERSHIP_ID
+        elif ticket_type == "botdeveloper":
+            role_id = LEAD_BOT_DEVELOPER_ID
+        else:
+            role_id = RECRUITER_ID
+
         now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         
         # Create a private thread in the same channel
@@ -842,7 +907,11 @@ class TicketView(discord.ui.View):
         )
 
         try:
-            await thread.send(f"<@&{role_id}> <@{interaction.user.id}>")
+            if ticket_type == "botdeveloper":
+                await thread.send(f"<@&{role_id}> <@294842627017408512> <@{interaction.user.id}>")
+            else:
+                await thread.send(f"<@&{role_id}> <@{interaction.user.id}>")
+            
             embed = discord.Embed(title="🎟️ Ticket Opened", description="Thank you for reaching out! Our team will assist you shortly.\n\n📌 In the meantime:\n🔹 Can you provide more details about your issue?\n🔹 Be clear and precise so we can help faster.\n\n⏳ Please be patient – we’ll be with you soon!", colour=0x158225)
             await thread.send(embed=embed, view=CloseThreadView())  # Attach the CloseThreadView here
         except discord.Forbidden:
@@ -973,7 +1042,9 @@ class DenyReasonModal(discord.ui.Modal):
         if interaction.message and interaction.message.embeds:
             updated_embed = interaction.message.embeds[0]
             updated_embed.color = discord.Color.red()
+            updated_embed.title += " (Denied with reason)"
             updated_embed.add_field(name="Reason:", value=f"```\n{reason_text}\n```", inline=False)
+            updated_embed.add_field(name="Denied by:", value=f"<@{interaction.user.id}>", inline=False)
 
             await interaction.message.edit(embed=updated_embed, view=None)
 
@@ -1100,15 +1171,22 @@ class NameChangeModal(discord.ui.Modal, title="Request Name Change"):
                 await interaction.response.send_message("❌ Guild not found.", ephemeral=True)
                 return
 
+            if not is_in_correct_guild(interaction):
+                await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+                return
+
             channel = guild.get_channel(REQUESTS_CHANNEL_ID)
             if not channel:
                 await interaction.response.send_message("❌ Requests channel not found.", ephemeral=True)
                 return
 
             base_nick = interaction.user.nick if interaction.user.nick else interaction.user.name
-            new_name_cleaned = re.sub(r'(?:\s*\[(?:CADET|TRAINEE|SWAT)\])+$', '', self.new_name.value, flags=re.IGNORECASE)
+            # Remove the tag if it's at the beginning or end of the name
+            new_name_cleaned = re.sub(r'^(?:\[(CADET|TRAINEE|SWAT)\]\s*)?|(?:\s*\[(CADET|TRAINEE|SWAT)\])+$', '', self.new_name.value, flags=re.IGNORECASE)
+            # Check if there is an existing suffix in the base nickname
             suffix_match = re.search(r'\[(CADET|TRAINEE|SWAT)\]', base_nick, flags=re.IGNORECASE)
             suffix = suffix_match.group(0) if suffix_match else ""
+            # Append the suffix only if it exists
             new_name_final = new_name_cleaned + (" " + suffix if suffix else "")
         
             embed = discord.Embed(
@@ -1170,6 +1248,61 @@ class RequestOther(discord.ui.Modal, title="RequestOther"):
         except Exception as e:
             await interaction.response.send_message(f"❌ Error submitting 'other' request modal: {e}", ephemeral=True)
 
+class LOAModal(discord.ui.Modal, title="Leave of Absence (LOA)"):
+    reason = discord.ui.TextInput(
+        label="Reason for LOA",
+        style=discord.TextStyle.long,
+        placeholder="Explain why you need a leave of absence...",
+        required=True
+    )
+    end_date = discord.ui.TextInput(
+        label="End Date (YYYY-MM-DD)",
+        placeholder="Enter the date you plan to return (e.g., 2023-12-31)",
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            # Validate the date format
+            end_date = datetime.strptime(self.end_date.value, "%Y-%m-%d")
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid date format. Please use YYYY-MM-DD.", ephemeral=True)
+            return
+
+        # Create the ticket
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        channel = interaction.channel
+        thread_name = f"[LOA] - {interaction.user.display_name}"
+        thread = await channel.create_thread(
+            name=thread_name,
+            type=discord.ChannelType.private_thread,
+            invitable=False
+        )
+
+        try:
+            # Send the LOA details in the thread
+            embed = discord.Embed(
+                title="🎟️ LOA Request",
+                description=f"**User:** <@{interaction.user.id}>\n**Reason:** {self.reason.value}\n**End Date:** {self.end_date.value}",
+                color=0x158225
+            )
+            await thread.send(f"<@&{LEADERSHIP_ID}> <@{interaction.user.id}>")
+            await thread.send(embed=embed, view=CloseThreadView())
+
+            # Save the ticket info
+            add_ticket(
+                thread_id=str(thread.id),
+                user_id=str(interaction.user.id),
+                created_at=now_str,
+                ticket_type="loa"
+            )
+
+            await interaction.response.send_message("✅ Your LOA request has been submitted!", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Forbidden: Cannot send messages in the thread.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"❌ HTTP Error sending messages: {e}", ephemeral=True)
+
 # --------------------------------------
 #         BOT EVENTS & COMMANDS
 # --------------------------------------
@@ -1223,12 +1356,20 @@ async def on_ready():
 
 @bot.tree.command(name="hello", description="Say hello to the bot")
 async def hello_command(interaction: discord.Interaction):
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+        return
     await interaction.response.send_message(f"✅ Hello, {interaction.user.mention}!", ephemeral=True)
 
 @bot.tree.command(name="ticket_internal", description="Creates a ticket without pinging anybody!")
 async def ticket_internal(interaction: discord.Interaction):
         """Creates a private thread and pings the correct role."""
         now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
+        
         leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
         if not leadership_role or (leadership_role not in interaction.user.roles):
             await interaction.response.send_message("❌ You do not have permission to open a private ticket.", ephemeral=True)
@@ -1267,195 +1408,6 @@ async def ticket_internal(interaction: discord.Interaction):
             await interaction.response.send_message("✅ Your ticket has been created!", ephemeral=True)
         else:
             await interaction.response.send_message("❌ Ticket channel not found", ephemeral=True)
-
-@bot.tree.command(name="testconfiguration", description="Check if the bot is properly configured.")
-async def testconfiguration(interaction: discord.Interaction):
-    # We'll store pass/fail messages here
-    checks = []
-
-    checks.append("\n")
-    checks.append("## Checking message permissions \n")
-    
-    # 1. Check if we can read/send messages in the current channel
-    if interaction.channel.permissions_for(interaction.guild.me).send_messages:
-        checks.append("✅ Can send messages in this channel")
-    else:
-        checks.append("❌ Cannot send messages in this channel")
-
-    # 2. Check if we can rename a user (we'll try renaming the command user and revert)
-    checks.append("\n")
-    checks.append("## Checking renaming permissions \n")
-    bot_member = interaction.guild.me  # The bot's own member object
-    
-    # 1. Check for the 'Manage Nicknames' permission at the guild level
-    if bot_member.guild_permissions.manage_nicknames:
-        checks.append("✅ Bot has the 'Manage Nicknames' permission")
-    else:
-        checks.append("❌ Bot does NOT have the 'Manage Nicknames' permission")
-
-    # 2. Check role hierarchy (bot's top role must be higher than the user's top role)
-    if bot_member.top_role > interaction.user.top_role:
-        checks.append(f"✅ Bot's top role is higher than {interaction.user.display_name}'s top role, so renaming is possible!")
-    else:
-        checks.append(f"❌ {interaction.user.display_name} has a role equal or higher than the bot's top role! No renaming possible!")
-
-    checks.append("\n")
-    checks.append("## Checking thread permissions \n")
-    # 3. Check if we can create threads
-    try:
-        if interaction.channel.permissions_for(interaction.guild.me).create_public_threads:
-            checks.append("✅ Can create public threads")
-        else:
-            checks.append("❌ Cannot create public threads")
-    except Exception as e:
-        checks.append(f"❌ Error checking thread creation perms: {e}")
-
-    try:
-        if interaction.channel.permissions_for(interaction.guild.me).create_private_threads:
-            checks.append("✅ Bot has permission for creating private threads")
-        else:
-            checks.append("❌ Bot does not have permission to create private threads")
-    except Exception as e:
-        checks.append(f"❌ Error checking thread creation perms: {e}")
-
-    checks.append("\n ## Checking channel permissions \n")
-    trainee_notes = interaction.guild.get_channel(TRAINEE_NOTES_CHANNEL)
-    if not trainee_notes:
-        checks.append(f"❌ Channel with ID {TRAINEE_NOTES_CHANNEL} not found.")
-    else:
-        bot_perms = trainee_notes.permissions_for(interaction.guild.me)
-        if bot_perms.send_messages:
-            checks.append(f"✅ Can send messages in <#{TRAINEE_NOTES_CHANNEL}>")
-        else:
-            checks.append(f"❌ Cannot send messages in <#{TRAINEE_NOTES_CHANNEL}>")
-
-        if bot_perms.create_public_threads:
-            checks.append(f"✅ Can create threads in <#{TRAINEE_NOTES_CHANNEL}>")
-        else:
-            checks.append(f"❌ Cannot create threads in <#{TRAINEE_NOTES_CHANNEL}>")
-
-    cadet_notes = interaction.guild.get_channel(CADET_NOTES_CHANNEL)
-    if not cadet_notes:
-        checks.append(f"❌ Channel with ID {CADET_NOTES_CHANNEL} not found.")
-    else:
-        bot_perms = cadet_notes.permissions_for(interaction.guild.me)
-        if bot_perms.send_messages:
-            checks.append(f"✅ Can send messages in <#{CADET_NOTES_CHANNEL}>")
-        else:
-            checks.append(f"❌ Cannot send messages in <#{CADET_NOTES_CHANNEL}>")
-
-        if bot_perms.create_public_threads:
-            checks.append(f"✅ Can create threads in <#{CADET_NOTES_CHANNEL}>")
-        else:
-            checks.append(f"❌ Cannot create threads in <#{CADET_NOTES_CHANNEL}>")
-
-    trainee_chat = interaction.guild.get_channel(TRAINEE_CHAT_CHANNEL)
-    if not trainee_chat:
-        checks.append(f"❌ Channel with ID {TRAINEE_CHAT_CHANNEL} not found.")
-    else:
-        bot_perms = trainee_chat.permissions_for(interaction.guild.me)
-        if bot_perms.send_messages:
-            checks.append(f"✅ Can send messages in <#{TRAINEE_CHAT_CHANNEL}>")
-        else:
-            checks.append(f"❌ Cannot send messages in <#{TRAINEE_CHAT_CHANNEL}>")
-
-        if bot_perms.create_public_threads:
-            checks.append(f"✅ Can create threads in <#{TRAINEE_CHAT_CHANNEL}>")
-        else:
-            checks.append(f"❌ Cannot create threads in <#{TRAINEE_CHAT_CHANNEL}>")
-
-    swat_chat = interaction.guild.get_channel(SWAT_CHAT_CHANNEL)
-    if not swat_chat:
-        checks.append(f"❌ Channel with ID {SWAT_CHAT_CHANNEL} not found.")
-    else:
-        bot_perms = swat_chat.permissions_for(interaction.guild.me)
-        if bot_perms.send_messages:
-            checks.append(f"✅ Can send messages in <#{SWAT_CHAT_CHANNEL}>")
-        else:
-            checks.append(f"❌ Cannot send messages in <#{SWAT_CHAT_CHANNEL}>")
-
-        if bot_perms.create_public_threads:
-            checks.append(f"✅ Can create threads in <#{SWAT_CHAT_CHANNEL}>")
-        else:
-            checks.append(f"❌ Cannot create threads in <#{SWAT_CHAT_CHANNEL}>")
-
-    main_embed = interaction.guild.get_channel(TARGET_CHANNEL_ID)
-    if not main_embed:
-        checks.append(f"❌ Channel with ID {TARGET_CHANNEL_ID} not found.")
-    else:
-        bot_perms = main_embed.permissions_for(interaction.guild.me)
-        if bot_perms.send_messages:
-            checks.append(f"✅ Can send messages in <#{TARGET_CHANNEL_ID}>")
-        else:
-            checks.append(f"❌ Cannot send messages in <#{TARGET_CHANNEL_ID}>")
-
-        if bot_perms.create_public_threads:
-            checks.append(f"✅ Can create threads in <#{TARGET_CHANNEL_ID}>")
-        else:
-            checks.append(f"❌ Cannot create threads in <#{TARGET_CHANNEL_ID}>")
-
-    requests_channel = interaction.guild.get_channel(REQUESTS_CHANNEL_ID)
-    if not requests_channel:
-        checks.append(f"❌ Channel with ID {REQUESTS_CHANNEL_ID} not found.")
-    else:
-        bot_perms = requests_channel.permissions_for(interaction.guild.me)
-        if bot_perms.send_messages:
-            checks.append(f"✅ Can send messages in <#{REQUESTS_CHANNEL_ID}>")
-        else:
-            checks.append(f"❌ Cannot send messages in <#{REQUESTS_CHANNEL_ID}>")
-
-        if bot_perms.create_public_threads:
-            checks.append(f"✅ Can create threads in <#{REQUESTS_CHANNEL_ID}>")
-        else:
-            checks.append(f"❌ Cannot create threads in <#{REQUESTS_CHANNEL_ID}>")
-
-    checks.append("\n")
-    checks.append("## Checking role permissions \n")
-    # 4. Check if we can manage roles (e.g., trainee role)
-    trainee_role = interaction.guild.get_role(TRAINEE_ROLE)
-    if trainee_role:
-        if trainee_role < interaction.guild.me.top_role:
-            checks.append("✅ Bot can manage the trainee role")
-        else:
-            checks.append("❌ Trainee role is above bot's top role, cannot manage it")
-    else:
-        checks.append("❌ Trainee role not found")
-
-    cadet_role = interaction.guild.get_role(CADET_ROLE)
-    if cadet_role:
-        if cadet_role < interaction.guild.me.top_role:
-            checks.append("✅ Bot can manage the cadet role")
-        else:
-            checks.append("❌ Cadet role is above bot's top role, cannot manage it")
-    else:
-        checks.append("❌ Cadet role not found")
-        
-    swat_role = interaction.guild.get_role(SWAT_ROLE_ID)
-    if swat_role:
-        if swat_role < interaction.guild.me.top_role:
-            checks.append("✅ Bot can manage the swat role")
-        else:
-            checks.append("❌ Swat role is above bot's top role, cannot manage it")
-    else:
-        checks.append("❌ Swat role not found")
-    
-    officer_role = interaction.guild.get_role(OFFICER_ROLE_ID)
-    if officer_role:
-        if officer_role < interaction.guild.me.top_role:
-            checks.append("✅ Bot can manage the Officer role")
-        else:
-            checks.append("❌ Officer role is above bot's top role, cannot manage it")
-    else:
-        checks.append("❌ Officer role not found")
-        
-    # 5. Summarize results in an embed
-    embed = discord.Embed(
-        title="Bot Configuration Check",
-        description="\n".join(checks),
-        color=discord.Color.green() if all("✅" in c for c in checks) else discord.Color.red()
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 @tasks.loop(minutes=5)
 async def check_embed():
@@ -1541,7 +1493,7 @@ async def check_expired_endtimes():
                     voting_embed = discord.Embed(
                         description=(
                             "SWAT, please express your vote below.\n"
-                            "Use <:plus_one:1334498534187208714>, ❔, or <:minus_one:1334498485390544989> accordingly."
+                            f"Use {PLUS_ONE_EMOJI}, ❔, or {MINUS_ONE_EMOJI} accordingly."
                         ),
                         color=0x000000
                     )
@@ -1604,7 +1556,10 @@ async def ensure_ticket_embed():
             pass
 
     # If the embed doesn't exist, send a new one
-    embed = discord.Embed(title="🎟️ Open a Ticket", description="Need help? Choose the right department for your request:\n👑 Leadership – Crew-related issues, complaints, verification or giveaway claims.\n🛡️ Recruiters – Inquiries about Trainee program, applications or recruitment in general.\n\n📌 Click a button below to open a private thread with the right team!",
+    description = OPEN_TICKET_EMBED_TEXT.replace("{leadership_emoji}", LEADERSHIP_EMOJI)
+    description = description.replace("{recruiter_emoji}", RECRUITER_EMOJI)
+    description = description.replace("{leaddeveloper_emoji}", LEAD_BOT_DEVELOPER_EMOJI)
+    embed = discord.Embed(title="🎟️ Open a Ticket", description=description,
                       colour=0x28afcc)
     sent_msg = await channel.send(embed=embed, view=TicketView())
 
@@ -1633,49 +1588,79 @@ async def add_trainee_command_ephemeral(
     region: app_commands.Choice[str]
 ):
     """Manually add a user as trainee and create a voting thread."""
+    await interaction.response.defer(ephemeral=True)  # Defer first!
+
     try:
         user_id_int = int(user_id)
-    except ValueError:
-        await interaction.response.send_message("❌ Invalid user ID.", ephemeral=True)
-        return
+        region = region.value
 
-    leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
-    if not leadership_role or leadership_role not in interaction.user.roles:
-        await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
-        return
+        if not is_in_correct_guild(interaction):
+            await interaction.followup.send("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
 
-    if is_user_in_database(user_id_int):
-        await interaction.response.send_message(
-            "❌ This trainee is already in the database.",
-            ephemeral=True
-        )
-        return
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.followup.send("❌ You do not have permission to use this command.", ephemeral=True)
+            return
 
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        await interaction.response.send_message("❌ Guild not found.", ephemeral=True)
-        return
+        guild = bot.get_guild(GUILD_ID)
+        if not guild:
+            await interaction.followup.send("❌ Guild not found.", ephemeral=True)
+            return
 
-    member = guild.get_member(user_id_int)
-    if not member:
-        await interaction.response.send_message("❌ User not found in guild!", ephemeral=True)
-        return
+        if is_user_in_database(user_id_int):
+            await interaction.followup.send("❌ There is already a user with this ID in the database.", ephemeral=True)
+            return
 
-    try:
-        await interaction.response.defer(ephemeral=True)
-        await set_user_nickname(member, "trainee")
-        role_obj = guild.get_role(TRAINEE_ROLE)
-        if role_obj:
-            await member.add_roles(role_obj)
+        member = guild.get_member(user_id_int)
+        if not member:
+            await interaction.followup.send("❌ Member not found in guild.", ephemeral=True)
+            return
+
+        await set_user_nickname(member, "trainee", ingame_name)
+        trainee_role_obj = guild.get_role(TRAINEE_ROLE)
+
+        if trainee_role_obj:
+            try:
+                await member.add_roles(trainee_role_obj)
+            except discord.Forbidden:
+                await interaction.followup.send("❌ Bot lacks permission to assign roles.", ephemeral=True)
+                return
+            except discord.HTTPException as e:
+                await interaction.followup.send(f"❌ HTTP Error assigning role: {e}", ephemeral=True)
+                return
         else:
             await interaction.followup.send("❌ Trainee role not found.", ephemeral=True)
             return
 
+        # Assign region roles
+        role_mapping = {
+            "EU": EU_ROLE_ID,
+            "NA": NA_ROLE_ID,
+            "SEA": SEA_ROLE_ID
+        }
+        region_role = guild.get_role(role_mapping.get(region))
+
+        if region_role:
+            try:
+                await member.add_roles(region_role)
+            except discord.Forbidden:
+                await interaction.followup.send("❌ Bot lacks permission to assign region role.", ephemeral=True)
+                return
+            except discord.HTTPException as e:
+                await interaction.followup.send(f"❌ HTTP Error assigning region role: {e}", ephemeral=True)
+                return
+        else:
+            await interaction.followup.send(f"❌ {region} role not found.", ephemeral=True)
+            return
+
+        # Create trainee voting thread
         channel = guild.get_channel(TRAINEE_NOTES_CHANNEL)
         if channel:
             start_time = get_rounded_time()
             end_time = start_time + timedelta(days=7)
             thread_name = f"{ingame_name} | TRAINEE Notes"
+
             try:
                 thread = await channel.create_thread(
                     name=thread_name,
@@ -1691,12 +1676,21 @@ async def add_trainee_command_ephemeral(
                 await interaction.followup.send(f"❌ HTTP Error creating thread: {e}", ephemeral=True)
                 return
 
-            voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id, region.value, ingame_name)
-            embed_msg = await thread.send(embed=voting_embed)
-            await embed_msg.add_reaction(PLUS_ONE_EMOJI)
-            await embed_msg.add_reaction("❔")
-            await embed_msg.add_reaction(MINUS_ONE_EMOJI)
+            # Send voting embed
+            try:
+                voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id, region, ingame_name)
+                embed_msg = await thread.send(embed=voting_embed)
+                await embed_msg.add_reaction(PLUS_ONE_EMOJI)
+                await embed_msg.add_reaction("❔")
+                await embed_msg.add_reaction(MINUS_ONE_EMOJI)
+            except discord.Forbidden:
+                await interaction.followup.send("❌ Forbidden: Cannot create embed.", ephemeral=True)
+                return
+            except discord.HTTPException as e:
+                await interaction.followup.send(f"❌ HTTP Error creating embed: {e}", ephemeral=True)
+                return
 
+            # Add entry to database
             add_ok = add_entry(
                 thread_id=thread.id,
                 recruiter_id=str(interaction.user.id),
@@ -1705,21 +1699,39 @@ async def add_trainee_command_ephemeral(
                 role_type="trainee",
                 embed_id=str(embed_msg.id),
                 ingame_name=ingame_name,
-                user_id=str(user_id_int),
-                region=region.value
+                user_id=str(user_id),
+                region=str(region)
             )
-            if not add_ok:
+
+            if add_ok:
+                trainee_channel = guild.get_channel(TRAINEE_CHAT_CHANNEL)
+                if trainee_channel:
+                    message = random.choice(trainee_messages).replace("{username}", f"<@{user_id}>")
+                    trainee_embed = discord.Embed(description=message, colour=0x008000)
+                    await trainee_channel.send(f"<@{user_id}>")
+                    await trainee_channel.send(embed=trainee_embed)
+            else:
                 await interaction.followup.send("❌ Failed to add user to database.", ephemeral=True)
                 return
 
-            await interaction.followup.send("✅ Trainee added successfully!", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Cannot find the trainee notes channel.", ephemeral=True)
+        await interaction.followup.send("✅ Trainee added successfully!", ephemeral=True)
+
     except Exception as e:
-        await interaction.followup.send(f"❌ Error adding trainee: {e}", ephemeral=True)
+        error_message = f"❌ Unknown error occurred: {str(e)}\n{traceback.format_exc()}"
+        if interaction.response.is_done():
+            await interaction.followup.send(error_message, ephemeral=True)
+        else:
+            await interaction.response.send_message(error_message, ephemeral=True)
+        print(error_message)  # Log the error
+
 
 @bot.tree.command(name="votinginfo", description="Show info about the current voting thread")
 async def votinginfo_command(interaction: discord.Interaction):
+    
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+        return
+    
     """Display info about the currently used thread, if it exists in DB."""
     if not isinstance(interaction.channel, discord.Thread):
         await interaction.response.send_message("❌ Use this command inside a thread.", ephemeral=True)
@@ -1745,6 +1757,10 @@ async def votinginfo_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="remove", description="Remove a user from trainee / cadet program and close thread!")
 async def lock_thread_command(interaction: discord.Interaction):
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+        return
+    
     """Close the thread if it's a valid voting thread."""
     recruiter_role = interaction.guild.get_role(RECRUITER_ID)
     if not recruiter_role or (recruiter_role not in interaction.user.roles):
@@ -1805,6 +1821,10 @@ async def lock_thread_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="promote", description="Promote the user in the current voting thread (Trainee->Cadet or Cadet->SWAT).")
 async def promote_user_command(interaction: discord.Interaction):
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+        return
+    
     """Promote a user from Trainee->Cadet or Cadet->SWAT, closing the old thread and creating a new one if needed."""
     recruiter_role = interaction.guild.get_role(RECRUITER_ID)
     if not recruiter_role or (recruiter_role not in interaction.user.roles):
@@ -1917,9 +1937,11 @@ async def promote_user_command(interaction: discord.Interaction):
             await set_user_nickname(member, "swat")
             c_role = guild.get_role(CADET_ROLE)
             s_role = guild.get_role(SWAT_ROLE_ID)
+            o_role = guild.get_role(OFFICER_ROLE_ID)
             if c_role in member.roles:
                 await member.remove_roles(c_role)
             await member.add_roles(s_role)
+            await member.add_roles(o_role)
             try:
                 await member.send(welcome_to_swat)
             except discord.Forbidden:
@@ -1934,6 +1956,10 @@ async def promote_user_command(interaction: discord.Interaction):
 @bot.tree.command(name="extend", description="Extend the current thread's voting period.")
 @app_commands.describe(days="How many days to extend?")
 async def extend_thread_command(interaction: discord.Interaction, days: int):
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+        return
+    
     """Extend the voting period for the currently open thread."""
     recruiter_role = interaction.guild.get_role(RECRUITER_ID)
     if not recruiter_role or (recruiter_role not in interaction.user.roles):
@@ -1989,6 +2015,10 @@ async def extend_thread_command(interaction: discord.Interaction, days: int):
 
 @bot.tree.command(name="resend_voting", description="Resends a voting embed!")
 async def resend_voting_command(interaction: discord.Interaction):
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+        return
+    
     """Resend a voting embed for the current thread."""
     recruiter_role = interaction.guild.get_role(RECRUITER_ID)
     if not recruiter_role or (recruiter_role not in interaction.user.roles):
@@ -2018,6 +2048,10 @@ async def resend_voting_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="early_vote", description="Resends a voting embed!")
 async def early_vote(interaction: discord.Interaction):
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+        return
+    
     """Resend a voting embed for the current thread."""
     recruiter_role = interaction.guild.get_role(RECRUITER_ID)
     if not recruiter_role or (recruiter_role not in interaction.user.roles):
@@ -2054,7 +2088,7 @@ async def early_vote(interaction: discord.Interaction):
                     voting_embed = discord.Embed(
                         description=(
                             "SWAT, please express your vote below.\n"
-                            "Use <:plus_one:1334498534187208714>, ❔, or <:minus_one:1334498485390544989> accordingly."
+                            f"Use {PLUS_ONE_EMOJI}, ❔, or {MINUS_ONE_EMOJI} accordingly."
                         ),
                         color=0x000000
                     )
@@ -2089,6 +2123,7 @@ async def early_vote(interaction: discord.Interaction):
                     await interaction.followup.send(f"❌ Not a cadet thread!", ephemeral=True)
         else:
             await interaction.followup.send(f"❌ Reminder has already been sent!", ephemeral=True)
+    
     except Exception as e:
         if interaction.response.is_done():
             await interaction.followup.send(f"❌ Error occurred: {e}", ephemeral=True)
@@ -2102,6 +2137,10 @@ async def early_vote(interaction: discord.Interaction):
 async def ticket_info(interaction: discord.Interaction):
     if not isinstance(interaction.channel, discord.Thread):
         await interaction.response.send_message("❌ Use this command in the ticket thread.", ephemeral=True)
+        return
+
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
         return
 
     thread_id = str(interaction.channel.id)
@@ -2119,27 +2158,53 @@ async def ticket_info(interaction: discord.Interaction):
 
 @bot.tree.command(name="ticket_close", description="Close the current ticket.")
 async def ticket_close(interaction: discord.Interaction):
-    if not isinstance(interaction.channel, discord.Thread):
-        await interaction.response.send_message("❌ Use this command in the ticket thread.", ephemeral=True)
-        return
+        thread = interaction.channel
+            
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
 
-    thread_id = str(interaction.channel.id)
-    if thread_id not in active_tickets:
-        await interaction.response.send_message("❌ This thread is not a registered ticket.", ephemeral=True)
-        return
+        # Optional: Restrict who can close the thread (e.g., only the ticket creator or specific roles)
+        # Example: Only the user who opened the ticket can close it
+        ticket_data = get_ticket_info(str(thread.id))
+        print(ticket_data)
+        if not ticket_data:
+            await interaction.response.send_message("❌ No ticket data found for this thread.", ephemeral=True)
+            return
 
-    # Remove from DB
-    remove_ticket(thread_id)
+        if ticket_data[3] == "recruiters":
+            closing_role = interaction.guild.get_role(RECRUITER_ID)
+        elif ticket_data[3] == "botdeveloper":
+            closing_role = interaction.guild.get_role(LEAD_BOT_DEVELOPER_ID)
+        elif ticket_data[3] == "loa":
+            closing_role = interaction.guild.get_role(LEADERSHIP_ID)
+        else:
+            closing_role = interaction.guild.get_role(LEADERSHIP_ID)
+        
+        if not closing_role or (closing_role not in interaction.user.roles and interaction.user.id != int(ticket_data[1])):
+            await interaction.response.send_message("❌ You do not have permission to close this ticket.", ephemeral=True)
+            return
 
-    # Remove from bot's memory
-    del active_tickets[thread_id]
+        try:
+            ticket_data = get_ticket_info(str(interaction.channel.id))
+            if not ticket_data:
+                await interaction.response.send_message("❌ This thread is not a registered ticket.", ephemeral=True)
+                return
 
-    # Lock and archive
-    embed = discord.Embed(title=f"Ticket closed by {interaction.user.nick}",
-                colour=0xf51616)
-    embed.set_footer(text="🔒This ticket is locked now!")
-    await interaction.response.send_message(embed=embed)
-    await interaction.channel.edit(locked=True, archived=True)
+            remove_ticket(str(thread.id))
+            embed = discord.Embed(title=f"Ticket closed by {interaction.user.nick if interaction.user.nick else interaction.user.name}",
+                      colour=0xf51616)
+            embed.set_footer(text="🔒This ticket is locked now!")
+            await interaction.response.send_message(embed=embed)
+            await interaction.channel.edit(locked=True, archived=True)
+    
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don't have permission to close this thread.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"❌ Failed to close thread: {e}", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ An unexpected error occurred: {e}", ephemeral=True)
+
 # --------------------------------------
 #        SHUTDOWN AND BOT LAUNCH
 # --------------------------------------

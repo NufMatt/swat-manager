@@ -129,3 +129,21 @@ cadet_messages = [
     "🎖️ Well deserved, {username}! Cadet status achieved! Keep grinding, and soon you’ll be on the SWAT team! 🏅"
 ]
 
+OPEN_TICKET_EMBED_TEXT = """
+Need help? Choose the right department for your request:
+
+{leadership_emoji} **Leadership**  
+→ Crew-related issues, complaints, verification, or giveaway claims.  
+
+{recruiter_emoji} **Recruiters**  
+→ Inquiries about the Trainee program, applications, or recruitment in general.  
+
+{leaddeveloper_emoji} **Lead Bot Developer**  
+→ Issues related to SWAT bots, including errors, bugs, or technical problems.  
+
+💤 **LOA (Leave of Absence)**  
+→ Request time off from duties.  
+
+📌 Click a button below to open a private thread with the right team!
+
+"""
