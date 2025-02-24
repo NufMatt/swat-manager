@@ -11,7 +11,7 @@ import re
 import traceback
 from messages import trainee_messages, cadet_messages, welcome_to_swat, OPEN_TICKET_EMBED_TEXT
 import random
-from config import GUILD_ID, TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL, TRAINEE_CHAT_CHANNEL, SWAT_CHAT_CHANNEL, TRAINEE_ROLE, CADET_ROLE, SWAT_ROLE_ID, OFFICER_ROLE_ID, RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID, TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE, PLUS_ONE_EMOJI, MINUS_ONE_EMOJI, LEAD_BOT_DEVELOPER_ID, LEAD_BOT_DEVELOPER_EMOJI, INTEGRATIONS_MANAGER, RECRUITER_EMOJI, LEADERSHIP_EMOJI
+from config_testing import GUILD_ID, TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL, TRAINEE_CHAT_CHANNEL, SWAT_CHAT_CHANNEL, TRAINEE_ROLE, CADET_ROLE, SWAT_ROLE_ID, OFFICER_ROLE_ID, RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID, TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE, PLUS_ONE_EMOJI, MINUS_ONE_EMOJI, LEAD_BOT_DEVELOPER_ID, LEAD_BOT_DEVELOPER_EMOJI, INTEGRATIONS_MANAGER, RECRUITER_EMOJI, LEADERSHIP_EMOJI
 
 # --------------------------------------
 #               CONSTANTS
@@ -363,9 +363,9 @@ async def create_voting_embed(start_time, end_time, recruiter: int, region, inga
     """Create the standard voting embed with plus/minus/uncertain reactions."""
     try:
         if not isinstance(start_time, datetime):
-            start_time = datetime.strptime(str(start_time), "%Y-%m-%d %H:%M:%S.%f")
+            start_time = datetime.fromisoformat(str(start_time))
         if not isinstance(end_time, datetime):
-            end_time = datetime.strptime(str(end_time), "%Y-%m-%d %H:%M:%S.%f")
+            end_time = datetime.fromisoformat(str(end_time))
 
         embed = discord.Embed(
             description=(
@@ -895,7 +895,7 @@ class TicketView(discord.ui.View):
         else:
             role_id = RECRUITER_ID
 
-        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
         
         # Create a private thread in the same channel
         channel = interaction.channel
@@ -1270,7 +1270,7 @@ class LOAModal(discord.ui.Modal, title="Leave of Absence (LOA)"):
             return
 
         # Create the ticket
-        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
         channel = interaction.channel
         thread_name = f"[LOA] - {interaction.user.display_name}"
         thread = await channel.create_thread(
@@ -1364,7 +1364,7 @@ async def hello_command(interaction: discord.Interaction):
 @bot.tree.command(name="ticket_internal", description="Creates a ticket without pinging anybody!")
 async def ticket_internal(interaction: discord.Interaction):
         """Creates a private thread and pings the correct role."""
-        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
         
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
@@ -1471,7 +1471,7 @@ async def check_expired_endtimes():
 
             if thread and isinstance(thread, discord.Thread):
                 try:
-                    start_time = datetime.strptime(starttime, "%Y-%m-%d %H:%M:%S.%f")
+                    start_time = datetime.fromisoformat(starttime)
                 except ValueError:
                     print(f"❌ Error parsing starttime: {starttime}")
                     continue
@@ -1981,7 +1981,7 @@ async def extend_thread_command(interaction: discord.Interaction, days: int):
 
     try:
         if not isinstance(data["endtime"], datetime):
-            old_end = datetime.strptime(str(data["endtime"]), "%Y-%m-%d %H:%M:%S.%f")
+            old_end = datetime.fromisoformat(str(data["endtime"]))
         else:
             old_end = data["endtime"]
         new_end = old_end + timedelta(days=days)
@@ -2074,7 +2074,7 @@ async def early_vote(interaction: discord.Interaction):
             if thread and isinstance(thread, discord.Thread):
                 try:
                     if not isinstance(data["starttime"], datetime):
-                        start_time = datetime.strptime(str(data["starttime"]), "%Y-%m-%d %H:%M:%S.%f")
+                        start_time = datetime.fromisoformat(str(data["starttime"]))
                     else:
                         start_time = data["endtime"]
                 except ValueError:
