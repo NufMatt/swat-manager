@@ -1761,7 +1761,7 @@ async def lock_thread_command(interaction: discord.Interaction):
         await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
         return
     
-    """Close the thread if it's a valid voting thread."""
+    # Close the thread if it's a valid voting thread.
     recruiter_role = interaction.guild.get_role(RECRUITER_ID)
     if not recruiter_role or (recruiter_role not in interaction.user.roles):
         await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
@@ -1780,8 +1780,8 @@ async def lock_thread_command(interaction: discord.Interaction):
     channel_name = "❌ " + str(interaction.channel.name)
     try:
         await interaction.channel.edit(name=channel_name)
-    except:
-        print("Reanming thread failed")
+    except Exception:
+        print("Renaming thread failed")
 
     await close_thread(interaction, interaction.channel)
 
@@ -1790,34 +1790,41 @@ async def lock_thread_command(interaction: discord.Interaction):
         await interaction.followup.send("❌ Guild not found.", ephemeral=True)
         return
 
+    # Instead of returning immediately if the member isn't found,
+    # check and continue with sending the final embed.
     member = guild.get_member(int(data["user_id"]))
-    if not member:
-        await interaction.followup.send("❌ User not found in guild!", ephemeral=True)
-        return
-    
-    try:
-        temp_name = re.sub(r'(?:\s*\[(?:CADET|TRAINEE|SWAT)\])+$', '', member.nick if member.nick else member.name, flags=re.IGNORECASE)
-        await member.edit(nick=temp_name)
-    except discord.Forbidden:
-        await interaction.followup.send("❌ Forbidden: Cannot remove bracket from nickname.", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.followup.send(f"❌ HTTP Error removing bracket from nickname: {e}", ephemeral=True)
+    if member:
+        try:
+            temp_name = re.sub(r'(?:\s*\[(?:CADET|TRAINEE|SWAT)\])+$', '', member.nick if member.nick else member.name, flags=re.IGNORECASE)
+            await member.edit(nick=temp_name)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ Forbidden: Cannot remove tag from nickname.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ HTTP Error removing tag from nickname: {e}", ephemeral=True)
 
-    t_role = guild.get_role(TRAINEE_ROLE)
-    c_role = guild.get_role(CADET_ROLE)
-    try:
-        if t_role in member.roles:
-            await member.remove_roles(t_role)
-        elif c_role in member.roles:
-            await member.remove_roles(c_role)
-    except discord.Forbidden:
-        await interaction.followup.send("❌ Forbidden: Cannot remove roles.", ephemeral=True)
-    except discord.HTTPException as e:
-        await interaction.followup.send(f"❌ HTTP Error removing roles: {e}", ephemeral=True)
+        t_role = guild.get_role(TRAINEE_ROLE)
+        c_role = guild.get_role(CADET_ROLE)
+        try:
+            if t_role in member.roles:
+                await member.remove_roles(t_role)
+            elif c_role in member.roles:
+                await member.remove_roles(c_role)
+        except discord.Forbidden:
+            await interaction.followup.send("❌ Forbidden: Cannot remove roles.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ HTTP Error removing roles: {e}", ephemeral=True)
+    else:
+        # Log that the member couldn't be found.
+        print(f"Member with ID {data['user_id']} not found in guild (they may have left). Skipping nickname and role removal.")
 
-    embed = discord.Embed(title="❌ " + str(data["ingame_name"]) + " has been removed!", colour=0xf94144)
+    # Send the "removed" message even if the user left.
+    embed = discord.Embed(
+        title="❌ " + str(data["ingame_name"]) + " has been removed!",
+        colour=0xf94144
+    )
     embed.set_footer(text="🔒This thread is locked now!")
     await interaction.followup.send(embed=embed)
+
 
 @bot.tree.command(name="promote", description="Promote the user in the current voting thread (Trainee->Cadet or Cadet->SWAT).")
 async def promote_user_command(interaction: discord.Interaction):
