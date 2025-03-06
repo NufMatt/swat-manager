@@ -1462,7 +1462,7 @@ async def check_expired_endtimes():
             FROM entries 
             WHERE endtime <= ? AND reminder_sent = 0
             """,
-            (now,)
+            (now.isoformat(),)
         )
         expired_entries = cursor.fetchall()
 
