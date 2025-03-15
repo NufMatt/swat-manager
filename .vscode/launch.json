@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Python: Debug My Bot",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/main.py", // or wherever your main is
+        "console": "integratedTerminal",
+        "justMyCode": false
+      }
+    ]
+  }
+  

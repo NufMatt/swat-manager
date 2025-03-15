@@ -1,0 +1,3 @@
+embed = discord.Embed(title="🚨 S.W.A.T. Recruitment - Application Requirements 🚨", description="Are you interested in joining **S.W.A.T.**? Make sure you meet the following requirements before applying:\n            🔸 **Level 20**\n            🟢 **16+ years old**\n            🎤 **Working mic & speak English**\n            🎯 **Enjoy activities and events**\nIf you wish to submit a **Trainee Application**, please note that **you must first provide your ban history**. Requesting it in the CnR Server via a ticket speeds up the application process!\n\n A recruiter will review your application shortly after submission. 🚔", colour=0x39bb53)
+
+
