@@ -11,6 +11,7 @@ from config_testing import (
 )
 from cogs.helpers import log  # our unified logging function
 
+# In your __init__ method of PlayerListCog, add a new attribute:
 class PlayerListCog(commands.Cog):
     """Cog for updating an online player list embed based on external APIs."""
     
@@ -26,7 +27,10 @@ class PlayerListCog(commands.Cog):
         except Exception as e:
             log(f"Error loading stored embeds: {e}", level="error")
             self.stored_embeds = []
+        # New: Dictionary to track server unreachable state for each region.
+        self._server_unreachable = {}
         self.update_game_status.start()
+
 
     def cog_unload(self):
         self.update_game_status.cancel()
@@ -213,19 +217,29 @@ class PlayerListCog(commands.Cog):
 
     async def update_or_create_embed_for_region(self, channel, region, embed_pre):
         found_existing = False
+        # Initialize the flag for this region if not already done.
+        if region not in self._server_unreachable:
+            self._server_unreachable[region] = False
+
         for em in self.stored_embeds:
             if em["region"] == region:
                 found_existing = True
                 MAX_RETRIES = 3
-                for attempt in range(1, MAX_RETRIES+1):
+                for attempt in range(1, MAX_RETRIES + 1):
                     try:
                         msg = await channel.fetch_message(em["message_id"])
                         await msg.edit(embed=embed_pre)
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(2)
+                        # If we previously flagged the server as unreachable, log that it is now reachable.
+                        if self._server_unreachable.get(region, False):
+                            log(f"Server is reachable again for region {region}.", level="info")
+                            self._server_unreachable[region] = False
                         break
                     except discord.HTTPException as e:
                         if e.status == 503:
-                            log(f"Discord 503 on attempt {attempt} for region {region} while editing embed: {e}", level="error")
+                            if not self._server_unreachable.get(region, False):
+                                log(f"Discord 503 on attempt {attempt} for region {region} while editing embed: {e}", level="error")
+                                self._server_unreachable[region] = True
                             if attempt == MAX_RETRIES:
                                 log(f"Max retries reached for region {region} (edit failed)", level="error")
                         else:
@@ -237,19 +251,24 @@ class PlayerListCog(commands.Cog):
                 break
         if not found_existing:
             MAX_RETRIES = 3
-            for attempt in range(1, MAX_RETRIES+1):
+            for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     msg_send = await channel.send(embed=embed_pre)
                     self.stored_embeds.append({
-                        "region": region, 
-                        "channel_id": msg_send.channel.id, 
+                        "region": region,
+                        "channel_id": msg_send.channel.id,
                         "message_id": msg_send.id
                     })
                     await asyncio.sleep(1)
+                    if self._server_unreachable.get(region, False):
+                        log(f"Server is reachable again for region {region}.", level="info")
+                        self._server_unreachable[region] = False
                     break
                 except discord.HTTPException as e:
                     if e.status == 503:
-                        log(f"Discord 503 on attempt {attempt} for region {region} while sending embed: {e}", level="error")
+                        if not self._server_unreachable.get(region, False):
+                            log(f"Discord 503 on attempt {attempt} for region {region} while sending embed: {e}", level="error")
+                            self._server_unreachable[region] = True
                         if attempt == MAX_RETRIES:
                             log(f"Max retries reached for region {region} (send failed)", level="error")
                         else:

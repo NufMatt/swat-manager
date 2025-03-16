@@ -8,10 +8,10 @@ from datetime import datetime, timedelta
 from config_testing import (
     GUILD_ID, TICKET_CHANNEL_ID, TOKEN_FILE,
     LEADERSHIP_ID, RECRUITER_ID, LEAD_BOT_DEVELOPER_ID, SWAT_ROLE_ID,
-    RECRUITER_EMOJI, LEADERSHIP_EMOJI, LEAD_BOT_DEVELOPER_EMOJI
+    RECRUITER_EMOJI, LEADERSHIP_EMOJI, LEAD_BOT_DEVELOPER_EMOJI, ACTIVITY_CHANNEL_ID
 )
 from messages import OPEN_TICKET_EMBED_TEXT
-from cogs.helpers import log
+from cogs.helpers import log, create_user_activity_log_embed
 
 # -------------------------------
 # Ticket Database Functions
@@ -390,6 +390,10 @@ class TicketCog(commands.Cog):
                 return
             add_ticket(str(thread.id), str(interaction.user.id), now_str, "other")
             await interaction.response.send_message("✅ Your ticket has been created!", ephemeral=True)
+            activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+            if activity_channel:
+                embed = create_user_activity_log_embed("tickets", f"Internal Ticket opened", interaction.user, f"User has opened an internal ticket. (Thread ID: <#{thread.id}>)")
+                await activity_channel.send(embed=embed)
         else:
             await interaction.response.send_message("❌ Ticket channel not found", ephemeral=True)
             log(f"Ticket channel {TICKET_CHANNEL_ID} not found to create private ticket.", level="error")

@@ -3,11 +3,11 @@ from discord.ext import commands
 import asyncio
 import aiohttp
 import sys, os
-
+from cogs.helpers import create_user_activity_log_embed
 # Adjust path so that modules in the parent directory can be found
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Import configuration settings
-from config_testing import GUILD_ID, VERIFIED_ROLE, GUEST_ROLE, CHECK_CNR_VERIFIED_ROLE, CNR_ID
+from config_testing import GUILD_ID, VERIFIED_ROLE, GUEST_ROLE, CHECK_CNR_VERIFIED_ROLE, CNR_ID, ACTIVITY_CHANNEL_ID
 
 try:
     with open("account_token.txt", "r") as f:
@@ -59,7 +59,7 @@ class VerificationCog(commands.Cog):
 
         current_member = guild.get_member(member.id)
         if not current_member:
-            log(f"Member {member} (ID: {member.id}) is no longer in the guild after waiting. Skipping verification.")
+            log(f"Member {member} (ID: {member.id}) is not found in guild. User might not be in Discord anymore.", level="error")
             return
 
         url = f"https://discord.com/api/v9/guilds/{CNR_ID}/members/{member.id}"
@@ -88,6 +88,7 @@ class VerificationCog(commands.Cog):
                                 try:
                                     if guest_role in current_member.roles:
                                         await current_member.remove_roles(guest_role)
+                                        log(f"Guest role removed from member {member.id}.")
                                     await current_member.add_roles(role)
                                     log(f"Role '{role.name}' assigned to member {member.id}.")
                                 except discord.Forbidden:
@@ -103,6 +104,10 @@ class VerificationCog(commands.Cog):
                                 0x1cd946
                             )
                             await self.send_dm(current_member, embed, f"Verification DM sent to member {member.id}.")
+                            activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+                            if activity_channel:
+                                embed = create_user_activity_log_embed("verification", "Successful verification", member, "User has been successfully verified.")
+                                await activity_channel.send(embed=embed)
                         else:
                             log(f"Member {member.id} not verified (external role {CHECK_CNR_VERIFIED_ROLE} missing).", level="error")
                             embed = self.create_embed(
@@ -115,6 +120,10 @@ class VerificationCog(commands.Cog):
                                 0xf40000
                             )
                             await self.send_dm(current_member, embed, f"Failure DM (not verified) sent to member {member.id}.")
+                            activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+                            if activity_channel:
+                                embed = create_user_activity_log_embed("verification", "Failed verification", member, "User couldn't be verified.")
+                                await activity_channel.send(embed=embed)
                     else:
                         log(f"External API request for member {member.id} returned response code {status}.", level="error")
                         embed = self.create_embed(
@@ -127,6 +136,10 @@ class VerificationCog(commands.Cog):
                             0xf40000
                         )
                         await self.send_dm(current_member, embed, f"Failure DM due to API response sent to member {member.id}.")
+                        activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+                        if activity_channel:
+                            embed = create_user_activity_log_embed("verification", "Failed verification", member, f"User couldn't be verified. (Response Code: {status})")
+                            await activity_channel.send(embed=embed)
         except aiohttp.ClientError as e:
             log(f"API request error for member {member.id}: {e}", level="error")
             embed = self.create_embed(
@@ -135,6 +148,10 @@ class VerificationCog(commands.Cog):
                 0xf40000
             )
             await self.send_dm(current_member, embed, f"Error DM (ClientError) sent to member {member.id}.")
+            activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+            if activity_channel:
+                embed = create_user_activity_log_embed("verification", "Failed verification", member, f"User couldn't be verified. (Response Code: {e})")
+                await activity_channel.send(embed=embed)
         except Exception as e:
             log(f"Unexpected error in on_member_join for member {member.id}: {e}", level="error")
             embed = self.create_embed(
@@ -143,6 +160,10 @@ class VerificationCog(commands.Cog):
                 0xf40000
             )
             await self.send_dm(current_member, embed, f"Error DM (Exception) sent to member {member.id}.")
+            activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+            if activity_channel:
+                embed = create_user_activity_log_embed("verification", "Failed verification", member, f"User couldn't be verified. (Response Code: {e})")
+                await activity_channel.send(embed=embed)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(VerificationCog(bot))

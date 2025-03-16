@@ -98,3 +98,11 @@ EMBEDS_FILE = "embeds.json"
 # Verification Bot
 # -----------------------
 CHECK_CNR_VERIFIED_ROLE = 871086120698523668
+
+
+# -----------------------
+# Application Bot
+# -----------------------
+APPLICATION_EMBED_ID_FILE = "application_embed_id.txt"
+ACTIVITY_CHANNEL_ID = 11111111 # CHANGE
+APPLY_CHANNEL_ID = 1350481022734696468 # CHANGE!!!!!

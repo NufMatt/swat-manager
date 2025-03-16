@@ -7,6 +7,7 @@ with open(TOKEN_FILE, "r", encoding="utf-8") as file:
     TOKEN = file.read().strip()
 
 intents = discord.Intents.default()
+intents.message_content = True
 intents.members = True
 intents.guilds = True
 
@@ -24,11 +25,10 @@ async def on_ready():
 async def main():
     async with bot:
         # Load the cogs/extensions:
-        # await bot.load_extension("cogs.recruitment")
-        await bot.load_extension("cogs.recruitment-new")
-        # await bot.load_extension("cogs.tickets")
-        # await bot.load_extension("cogs.playerlist")
-        # await bot.load_extension("cogs.verification")
+        await bot.load_extension("cogs.recruitment")
+        await bot.load_extension("cogs.tickets")
+        await bot.load_extension("cogs.playerlist")
+        await bot.load_extension("cogs.verification")
         # await bot.load_extension("cogs.example_cog")
         await bot.start(TOKEN)
 

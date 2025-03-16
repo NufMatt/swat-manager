@@ -1,12 +1,5 @@
 import discord
 from config_testing import *
-
-def is_in_correct_guild(interaction: discord.Interaction) -> bool:
-    return interaction.guild_id == GUILD_ID
-
-
-# helpers.py
-
 import logging
 import inspect
 from datetime import datetime
@@ -43,3 +36,48 @@ def log(message: str, level: str = "info"):
     else:
         logging.info(full_msg)
 
+def is_in_correct_guild(interaction: discord.Interaction) -> bool:
+    return interaction.guild_id == GUILD_ID
+
+def create_user_activity_log_embed(type: str, action: str, user: discord.Member, details: str) -> discord.Embed:
+    """
+    Creates a styled embed for logging activity in the activity channel.
+    
+    :param type: A category or type of log (e.g. "User Activity")
+    :param action: The specific action (e.g., "Accepted Application", "Removed Trainee", etc.)
+    :param user: The discord.Member who performed the action.
+    :param details: Additional details about the action.
+    :return: A discord.Embed object.
+    """
+    if type == "recruitment":
+        color = discord.Color.green()
+        title = "📋 Recruitment Log"
+    elif type == "playerlist":
+        color = discord.Color.orange()
+        title = "📊 Player List Log"
+    elif type == "verification":
+        title = "🔒 Verification Log"
+        color = discord.Color.purple()
+    elif type == "tickets":
+        title = "🎫 Ticket Log"
+        color = discord.Color.red()
+    else:
+        title = "📌 Activity Log"
+        color = discord.Color.black()
+    
+    embed = discord.Embed(
+        title=title,
+        description="",
+        color=color,
+        timestamp=datetime.now()
+    )
+
+    embed.add_field(name="🛠 Action:", value=f"**{action}**", inline=False)
+    embed.add_field(name="👤 Performed By:", value=f"{user.mention} ({user.display_name})", inline=True)
+    embed.add_field(name="📄 Details:", value=f"{details}", inline=False)
+
+    embed.set_footer(text="🔒 This log is visible only to team members.")
+    # Use user.avatar.url if available; if not, fall back to default_avatar.url
+    embed.set_thumbnail(url=user.avatar.url if user.avatar else user.default_avatar.url)
+
+    return embed
