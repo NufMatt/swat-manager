@@ -1069,6 +1069,7 @@ class RegionSelect(discord.ui.Select):
             if user_id_str in pending_applications:
                 pending_applications[user_id_str]["region"] = selected_region
                 save_applications()
+                ### REGION SELECT MESSAGE (maybe remove)
                 await interaction.response.send_message(
                     f"✅ Region selected: {selected_region}", 
                     ephemeral=True
