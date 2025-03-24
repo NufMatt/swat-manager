@@ -178,12 +178,10 @@ def is_user_in_database(user_id: int) -> bool:
 #
 # APPLICATIONS DATABASE FUNCTIONS
 # 
-
 def init_applications_db():
     try:
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
-        # This is the NEW table for full application data:
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS application_threads (
@@ -196,7 +194,8 @@ def init_applications_db():
                 age           TEXT NOT NULL,
                 level         TEXT NOT NULL,
                 ban_history   TEXT NOT NULL,
-                is_closed     INTEGER DEFAULT 0
+                is_closed     INTEGER DEFAULT 0,
+                status        TEXT NOT NULL DEFAULT 'open'
             )
             """
         )
@@ -207,8 +206,10 @@ def init_applications_db():
     finally:
         if conn:
             conn.close()
+
             
 init_applications_db()
+
 
 def add_application(
     thread_id: str,
@@ -221,10 +222,6 @@ def add_application(
     level: str,
     ban_history: str
 ) -> bool:
-    """
-    Inserts a new row into application_threads.
-    recruiter_id can initially be None if unclaimed.
-    """
     conn = None
     try:
         conn = sqlite3.connect(DATABASE_FILE)
@@ -232,13 +229,13 @@ def add_application(
         cursor.execute(
             """
             INSERT INTO application_threads 
-            (thread_id, applicant_id, recruiter_id, starttime, ingame_name, region, age, level, ban_history, is_closed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            (thread_id, applicant_id, recruiter_id, starttime, ingame_name, region, age, level, ban_history, is_closed, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'open')
             """,
             (
                 thread_id,
                 applicant_id,
-                recruiter_id,  # might be None at first
+                recruiter_id,
                 starttime.isoformat(),
                 ingame_name,
                 region,
@@ -259,6 +256,7 @@ def add_application(
     finally:
         if conn:
             conn.close()
+
 
 def get_application(thread_id: str) -> Optional[Dict]:
     """
@@ -375,6 +373,157 @@ def remove_application(thread_id: str) -> bool:
         if conn:
             conn.close()
 
+def update_application_status(thread_id: str, new_status: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE application_threads SET status = ? WHERE thread_id = ?", (new_status, thread_id))
+        conn.commit()
+        updated = (cursor.rowcount > 0)
+        if updated:
+            log(f"Updated application {thread_id} status to {new_status}")
+        return updated
+    except sqlite3.Error as e:
+        log(f"DB Error (update_application_status): {e}", level="error")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def mark_application_removed(thread_id: str) -> bool:
+    conn = None
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE application_threads SET status = 'removed', is_closed = 1 WHERE thread_id = ?", (thread_id,))
+        conn.commit()
+        updated = (cursor.rowcount > 0)
+        if updated:
+            log(f"Marked application {thread_id} as removed")
+        return updated
+    except sqlite3.Error as e:
+        log(f"DB Error (mark_application_removed): {e}", level="error")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+# -------------------------------
+# APPLICATION ATTEMPTS DATABASE FUNCTIONS
+# -------------------------------
+
+def init_application_attempts_db():
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS application_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                applicant_id TEXT NOT NULL,
+                region TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                status TEXT NOT NULL,
+                log_url TEXT
+            )
+            """
+        )
+        conn.commit()
+        log("Application attempts DB initialized successfully.")
+    except sqlite3.Error as e:
+        log(f"Application Attempts DB Error: {e}", level="error")
+    finally:
+        if conn:
+            conn.close()
+
+init_application_attempts_db()
+
+def add_application_attempt(applicant_id: str, region: str, status: str, log_url: str) -> bool:
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        timestamp = datetime.now().isoformat()
+        cursor.execute(
+            "INSERT INTO application_attempts (applicant_id, region, timestamp, status, log_url) VALUES (?, ?, ?, ?, ?)",
+            (str(applicant_id), region, timestamp, status, log_url)
+        )
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        log(f"DB Error (add_application_attempt): {e}", level="error")
+        return False
+    finally:
+        conn.close()
+
+def get_recent_closed_attempts(applicant_id: str) -> list:
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
+        cursor.execute(
+            "SELECT timestamp, log_url FROM application_attempts WHERE applicant_id = ? AND status = 'closed_region_attempt' AND timestamp >= ?",
+            (str(applicant_id), seven_days_ago)
+        )
+        rows = cursor.fetchall()
+        return [{"timestamp": row[0], "log_url": row[1]} for row in rows]
+    except sqlite3.Error as e:
+        log(f"DB Error (get_recent_closed_attempts): {e}", level="error")
+        return []
+    finally:
+        conn.close()
+
+def get_application_stats() -> dict:
+    stats = {"accepted": 0, "denied": 0, "withdrawn": 0, "open": 0}
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        for status in stats.keys():
+            cursor.execute("SELECT COUNT(*) FROM application_threads WHERE status = ?", (status,))
+            stats[status] = cursor.fetchone()[0]
+    except sqlite3.Error as e:
+        log(f"DB Error (get_application_stats): {e}", level="error")
+    finally:
+        conn.close()
+    return stats
+
+def get_application_history(applicant_id: str) -> list:
+    history = []
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        # Get application submissions.
+        cursor.execute(
+            "SELECT starttime, status, ingame_name, region FROM application_threads WHERE applicant_id = ?",
+            (applicant_id,)
+        )
+        for row in cursor.fetchall():
+            history.append({
+                "timestamp": row[0],
+                "status": row[1],
+                "type": "submission",
+                "details": f"IGN: {row[2]}, Region: {row[3]}"
+            })
+        # Get closed-region attempts.
+        cursor.execute(
+            "SELECT timestamp, status, region, log_url FROM application_attempts WHERE applicant_id = ?",
+            (applicant_id,)
+        )
+        for row in cursor.fetchall():
+            history.append({
+                "timestamp": row[0],
+                "status": row[1],
+                "type": "attempt",
+                "details": f"Region: {row[2]}, [Log Entry]({row[3]})" if row[3] else f"Region: {row[2]}"
+            })
+    except sqlite3.Error as e:
+        log(f"DB Error (get_application_history): {e}", level="error")
+    finally:
+        conn.close()
+    # Sort history by timestamp (most recent first)
+    history.sort(key=lambda x: x["timestamp"], reverse=True)
+    return history
+
 # -------------------------------
 # APPLICATION STATUS
 # -------------------------------
@@ -487,6 +636,8 @@ def save_applications():
 # -------------------------------
 # Helper functions
 # -------------------------------
+
+
 def get_rounded_time() -> datetime:
     now = datetime.now()
     minutes_to_add = (15 - now.minute % 15) % 15
@@ -673,7 +824,7 @@ class ApplicationControlView(discord.ui.View):
         )
         embed.set_footer(text="🔒This application thread is locked now!")
         await interaction.response.send_message(embed=embed)
-        activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+        activity_channel = interaction.guild.get_channel(ACTIVITY_CHANNEL_ID)
         if activity_channel:
             embed = create_user_activity_log_embed("recruitment", f"Application Withdrawn", interaction.user, f"User has withdrawn an application. (Thread ID: <#{interaction.channel.id}>)")
             await activity_channel.send(embed=embed)
@@ -763,6 +914,7 @@ class RoleRequestView(discord.ui.View):
 class ApplicationView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+    
     @discord.ui.button(label="Open a Trainee Application", style=discord.ButtonStyle.primary, custom_id="request_trainee_role")
     async def request_trainee_role(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id_str = str(interaction.user.id)
@@ -778,7 +930,14 @@ class ApplicationView(discord.ui.View):
         if any(r.id in [TRAINEE_ROLE, CADET_ROLE] for r in interaction.user.roles):
             await interaction.response.send_message("❌ You already have a trainee/cadet role!", ephemeral=True)
             return
-        await interaction.response.send_modal(TraineeRoleModal())
+        
+        # Prompt the user to select their region first.
+        await interaction.response.send_message(
+            "Please select your **Region** for your application:",
+            view=RegionSelectionView(interaction.user.id),
+            ephemeral=True
+        )
+
 
 class RequestActionView(discord.ui.View):
     def __init__(self, user_id: int = None, request_type: str = None, ingame_name: str = None, recruiter: str = None, new_name: str = None, region: str = None):
@@ -1048,7 +1207,13 @@ class DenyReasonModal(discord.ui.Modal):
                 save_requests()
         await interaction.followup.send("✅ Denial reason submitted. User has been notified.", ephemeral=True)
 
-class RegionSelect(discord.ui.Select):
+class RegionSelectionView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=None)
+        self.user_id = user_id
+        self.add_item(RegionSelection())
+
+class RegionSelection(discord.ui.Select):
     def __init__(self):
         options = [
             discord.SelectOption(label="EU",  description="Europe"),
@@ -1056,40 +1221,45 @@ class RegionSelect(discord.ui.Select):
             discord.SelectOption(label="SEA", description="Southeast Asia"),
         ]
         super().__init__(
-            placeholder="Select what region you play the most!",
+            placeholder="Select the region you play in",
             min_values=1,
             max_values=1,
             options=options
         )
     
     async def callback(self, interaction: discord.Interaction):
-        try:
-            user_id_str = str(self.view.user_id)
-            selected_region = self.values[0]
-            if user_id_str in pending_applications:
-                pending_applications[user_id_str]["region"] = selected_region
-                save_applications()
-                ### REGION SELECT MESSAGE (maybe remove)
-                await interaction.response.send_message(
-                    f"✅ Region selected: {selected_region}", 
-                    ephemeral=True
-                )
-                
-                # IMPORTANT: Call finalize_tainee_request now
-                await finalize_trainee_request(interaction, user_id_str)
-            
-            else:
-                await interaction.response.send_message("❌ No pending request found.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Error selecting region: {e}", ephemeral=True)
+        selected_region = self.values[0]
+        if get_region_status(selected_region) == "CLOSED":
+            guild = interaction.client.get_guild(GUILD_ID)
+            if guild:
+                activity_channel = guild.get_channel(ACTIVITY_CHANNEL_ID)
+                if activity_channel:
+                    embed = create_user_activity_log_embed(
+                        "recruitment",
+                        "Closed Region Application Attempt",
+                        interaction.user,
+                        f"User attempted to apply for {selected_region} which is closed."
+                    )
+                    attempt_msg = await activity_channel.send(embed=embed)
+                    # Save the log URL (jump_url) for future reference.
+                    add_application_attempt(interaction.user.id, selected_region, "closed_region_attempt", attempt_msg.jump_url)
+            await interaction.response.send_message(
+                f"❌ Applications for {selected_region} are currently closed.",
+                ephemeral=True
+            )
+            return
+        
+        # If region is open, proceed to show the modal for further details.
+        modal = TraineeDetailsModal(selected_region)
+        await interaction.response.send_modal(modal)
 
-class TraineeDropdownView(discord.ui.View):
-    def __init__(self, user_id: int):
-        super().__init__(timeout=None)
-        self.user_id = user_id
-        self.add_item(RegionSelect())
 
-class TraineeRoleModal(discord.ui.Modal, title="Request Trainee Role"):
+
+class TraineeDetailsModal(discord.ui.Modal, title="Trainee Application Details"):
+    def __init__(self, region: str):
+        super().__init__()
+        self.region = region
+
     ingame_name = discord.ui.TextInput(
         label="In-Game Name",
         placeholder="Enter your in-game name"
@@ -1099,46 +1269,35 @@ class TraineeRoleModal(discord.ui.Modal, title="Request Trainee Role"):
         label="Your Age",
         placeholder="Enter your age (e.g., >16)",
         required=True,
-        max_length=3  # optional
+        max_length=3
     )
 
     level = discord.ui.TextInput(
         label="In-Game Level",
         placeholder="e.g., 22",
         required=True,
-        max_length=3  # optional
+        max_length=3
     )
 
     ban_history = discord.ui.TextInput(
         label="Ban History",
         style=discord.TextStyle.long,
-        placeholder="Any recent job/sever bans? If yes, explain briefly.",
+        placeholder="Any recent bans? If yes, explain briefly.",
         required=True
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        try:
-            user_id_str = str(interaction.user.id)
-            pending_applications[user_id_str] = {
-                "request_type": "trainee_role",
-                "ingame_name": self.ingame_name.value,
-                "age": self.age.value,
-                "level": self.level.value,
-                "ban_history": self.ban_history.value
-            }
-            save_applications()
-
-            # After they fill those out, you might still want them to select Region:
-            view = TraineeDropdownView(user_id=interaction.user.id)
-            await interaction.response.send_message(
-                "Please select your **Region** below:",
-                view=view,
-                ephemeral=True
-            )
-
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
-
+        user_id_str = str(interaction.user.id)
+        pending_applications[user_id_str] = {
+            "request_type": "trainee_role",
+            "ingame_name": self.ingame_name.value,
+            "age": self.age.value,
+            "level": self.level.value,
+            "ban_history": self.ban_history.value,
+            "region": self.region
+        }
+        save_applications()
+        await finalize_trainee_request(interaction, user_id_str)
 
 class NameChangeModal(discord.ui.Modal, title="Request Name Change"):
     new_name = discord.ui.TextInput(label="New Name", placeholder="Enter your new name")
@@ -1223,44 +1382,58 @@ class RequestOther(discord.ui.Modal, title="RequestOther"):
 # Define finalize_trainee_request as a module-level function.
 async def finalize_trainee_request(interaction: discord.Interaction, user_id_str: str):
     try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        
         request = pending_applications.get(user_id_str)
         if not request:
-            await interaction.followup.send("❌ No pending request found to finalize.", ephemeral=True)
+            try:
+                await interaction.followup.send("❌ No pending request found to finalize.", ephemeral=True)
+            except discord.NotFound:
+                log("Webhook not found when sending pending request not found message.")
             return
-        
+
         region = request.get("region")
         age     = request.get("age")
         level   = request.get("level")
         bans    = request.get("ban_history")
-        region  = request.get("region")
         ign     = request.get("ingame_name")
 
-        # Check that region is set...
         if not region:
-            await interaction.followup.send("❌ Please complete the region selection first.", ephemeral=True)
+            try:
+                await interaction.followup.send("❌ Please complete the region selection first.", ephemeral=True)
+            except discord.NotFound:
+                log("Webhook not found when sending region selection message.")
             return
         
         guild = interaction.client.get_guild(GUILD_ID)
         if not guild:
-            await interaction.followup.send("❌ Guild not found.", ephemeral=True)
+            try:
+                await interaction.followup.send("❌ Guild not found.", ephemeral=True)
+            except discord.NotFound:
+                log("Webhook not found when sending guild not found message.")
             return
 
-        if get_region_status(region) == "CLOSED":
-            activity_channel = guild.get_channel(ACTIVITY_CHANNEL_ID)
-            if activity_channel:
-                embed = create_user_activity_log_embed("recruitment", f"Application for closed region", interaction.user, f"User tried to apply for a closed region ({region})")
-                await activity_channel.send(embed=embed)
+        # Log the normal application submission.
+        activity_channel = guild.get_channel(ACTIVITY_CHANNEL_ID)
+        if activity_channel:
+            embed = create_user_activity_log_embed(
+                "recruitment",
+                "Application Opened",
+                interaction.user,
+                f"User has opened an application for {region}."
+            )
+            await activity_channel.send(embed=embed)
 
-            await interaction.followup.send("❌ Applications for this region are currently closed. Please apply again, when applications are open!", ephemeral=True)
-            return
-
-        # Create a private thread in APPLY_CHANNEL_ID
+        # Create a private thread for the application.
         apply_channel = guild.get_channel(APPLY_CHANNEL_ID)
         if not apply_channel:
-            await interaction.followup.send("❌ The application channel was not found!", ephemeral=True)
+            try:
+                await interaction.followup.send("❌ The application channel was not found!", ephemeral=True)
+            except discord.NotFound:
+                log("Webhook not found when sending application channel not found message.")
             return
         
-        # For example, a private thread:
         thread = await apply_channel.create_thread(
             name=f"{ign} - Trainee Application",
             message=None,
@@ -1268,32 +1441,58 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
             reason=f"Trainee application from user {user_id_str}",
             invitable=False
         )
+        
+        # Build the application overview embed.
+        history = get_application_history(str(interaction.user.id))
+        has_history = len(history) > 0
+        recent_attempts = get_recent_closed_attempts(str(interaction.user.id))
 
-        # Build the embed
         embed = discord.Embed(
-            title="Application Overview:",
-            description=f"**From:** <@{interaction.user.id}>",
+            title="📋 Application Overview",
+            description=f"**Applicant:** <@{interaction.user.id}>",
             color=0x0080c0
         )
-        embed.add_field(name="In-Game Name:", value=ign, inline=False)
-        embed.add_field(name="Age:", value=age, inline=False)
-        embed.add_field(name="Level:", value=level, inline=False)
-        embed.add_field(name="Ban History:", value=bans, inline=False)
-        embed.add_field(name="Region:", value=region, inline=False)
+        embed.add_field(name="🎮 In-Game Name", value=ign, inline=False)
+        embed.add_field(name="🔞 Age", value=age, inline=True)
+        embed.add_field(name="💪 Level", value=level, inline=True)
+        embed.add_field(name="📝 Ban History", value=bans, inline=False)
+        embed.add_field(name="🌍 Region", value=region, inline=True)
 
-        # The old "Accept/Ignore" buttons:
-        control_view = ApplicationControlView()  # no applicant_id
+        # Optional field: add internal references if the applicant has applied before.
+        if has_history or recent_attempts:
+            int_refs = ""
+            if has_history:
+                int_refs += f"- Has History \n"
+            for att in recent_attempts:
+                int_refs += f"- [Log Entry]({att['log_url']})\n"
+
+            embed.add_field(
+                name="⚠️ Internal Refs:",
+                value=int_refs,
+                inline=False
+            )
+        
+        # Final instructions to the applicant.
+        embed.add_field(
+            name="⏳ Next Steps",
+            value=(
+                "A recruiter will review your application soon and respond.\n"
+                "Next: **Provide your FULL ban history** by posting it as a picture in this thread. 📸"
+            ),
+            inline=False
+        )
+
+        control_view = ApplicationControlView()
         await thread.send(
-            content=f"<@&{RECRUITER_ID}> <@{interaction.user.id}>",
+            content=f"<@{interaction.user.id}>",
             embed=embed,
             view=control_view
         )
 
-        # Finally, store the data in the new DB table:
         add_application(
             thread_id=str(thread.id),
             applicant_id=str(interaction.user.id),
-            recruiter_id=None,  # Not claimed yet
+            recruiter_id=None,
             starttime=datetime.now(),
             ingame_name=ign,
             region=region,
@@ -1302,18 +1501,20 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
             ban_history=bans
         )
 
-        # Confirm to the user
-        await interaction.followup.send(
-            "✅ Your trainee role application has been submitted via private thread. Please wait for a response!",
-            ephemeral=True
-        )
-        activity_channel = guild.get_channel(ACTIVITY_CHANNEL_ID)
-        if activity_channel:
-            embed = create_user_activity_log_embed("recruitment", f"Application Opened", interaction.user, f"User has opened an application for {region}. (Thread ID: <#{interaction.channel.id}>)")
-            await activity_channel.send(embed=embed)
-
+        try:
+            await interaction.followup.send(
+                "✅ Your trainee role application has been submitted via private thread. Please share your whole ban history in the thread while you wait for a response from our recruiters!",
+                ephemeral=True
+            )
+        except discord.NotFound:
+            log("Webhook not found when sending submission confirmation.")
     except Exception as e:
-        await interaction.followup.send(f"❌ Error finalizing trainee request: {e}", ephemeral=True)
+        try:
+            await interaction.followup.send(f"❌ Error finalizing trainee request: {e}", ephemeral=True)
+        except discord.NotFound:
+            log(f"Webhook not found when sending error message: {e}")
+
+
 
 
 
@@ -2087,7 +2288,8 @@ class RecruitmentCog(commands.Cog):
             await interaction.response.send_message("❌ Must be used in a thread!", ephemeral=True)
             return
 
-        removed = remove_application(str(interaction.channel.id))
+        # Instead of deleting, mark the application as removed.
+        removed = mark_application_removed(str(interaction.channel.id))
         if not removed:
             await interaction.response.send_message("❌ No application data found or already removed!", ephemeral=True)
             return
@@ -2246,6 +2448,7 @@ class RecruitmentCog(commands.Cog):
             await trainee_chat.send(f"<@{applicant_id}>")
             await trainee_chat.send(embed=welcome_embed)
 
+        update_application_status(str(interaction.channel.id), 'accepted')
         # Mark application as closed in your DB and lock/archive the application thread
         close_application(str(interaction.channel.id))
         acceptance_embed = discord.Embed(
@@ -2267,26 +2470,25 @@ class RecruitmentCog(commands.Cog):
     @app_commands.command(name="app_deny", description="Deny the application with a reason and a note about reapplying.")
     @app_commands.describe(reason="Why is this application being denied?", can_reapply="Indicate if they can reapply later (e.g., 'Yes after 2 weeks').")
     async def app_deny_command(self, interaction: discord.Interaction, reason: str, can_reapply: str):
-        # Immediately defer so we can send followup messages
         await interaction.response.defer(ephemeral=False)
-
         if not is_in_correct_guild(interaction):
             await interaction.followup.send("❌ Wrong guild!", ephemeral=True)
             return
-
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.followup.send("❌ Must be used inside a thread!", ephemeral=True)
             return
-
         app_data = get_application(str(interaction.channel.id))
         if not app_data:
             await interaction.followup.send("❌ No application data found for this thread!", ephemeral=True)
             return
-
         if app_data["is_closed"] == 1:
             await interaction.followup.send("❌ This application is already closed!", ephemeral=True)
             return
 
+        # Mark the application as closed.
+        close_application(str(interaction.channel.id))
+        # Update the status to 'denied'
+        update_application_status(str(interaction.channel.id), 'denied')
         # Check if the user is allowed to deny (e.g., recruiter role)
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
         if not recruiter_role or recruiter_role not in interaction.user.roles:
@@ -2401,6 +2603,72 @@ class RecruitmentCog(commands.Cog):
         else:
             await interaction.response.send_message("Failed to update region status.", ephemeral=True)
 
+    @app_commands.command(name="app_stats", description="Show application statistics.")
+    async def app_stats(self, interaction: discord.Interaction):
+        guild = interaction.client.get_guild(GUILD_ID)
+        recruiter_role = guild.get_role(RECRUITER_ID) if guild else None
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+        stats = get_application_stats()
+        embed = discord.Embed(title="Application Statistics", color=discord.Color.blue())
+        embed.add_field(name="Accepted Applications", value=str(stats["accepted"]), inline=True)
+        embed.add_field(name="Denied Applications", value=str(stats["denied"]), inline=True)
+        embed.add_field(name="Withdrawn Applications", value=str(stats["withdrawn"]), inline=True)
+        embed.add_field(name="Current Open Applications", value=str(stats["open"]), inline=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+    @app_commands.command(name="app_history", description="Show all application attempts for a user.")
+    async def app_history(self, interaction: discord.Interaction, user_id: str):
+        guild = interaction.client.get_guild(GUILD_ID)
+        recruiter_role = guild.get_role(RECRUITER_ID) if guild else None
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+
+        history = get_application_history(user_id)
+        if not history:
+            await interaction.response.send_message("No application history found for this user.", ephemeral=True)
+            return
+
+        lines = []
+        # Define emoji mappings for each type and status.
+        type_emojis = {
+            "submission": "📥",
+            "attempt": "🔍"
+        }
+        status_emojis = {
+            "accepted": "✅",
+            "denied": "❌",
+            "withdrawn": "⚠️",
+            "open": "🟢"
+        }
+        for entry in history:
+            try:
+                dt = datetime.fromisoformat(entry['timestamp'])
+                formatted_time = dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                formatted_time = entry['timestamp']
+
+            type_emoji = type_emojis.get(entry["type"], "")
+            status_emoji = status_emojis.get(entry["status"].lower(), "")
+            line = (
+                f"{type_emoji} **{formatted_time}**\n"
+                f"Type: *{entry['type'].capitalize()}*  |  Status: {status_emoji} **{entry['status'].capitalize()}**\n"
+                f"Details: {entry['details']}\n"
+                "────────────────────────"
+            )
+            lines.append(line)
+        description = "\n".join(lines)
+
+        embed = discord.Embed(
+            title=f"📜 Application History for {user_id}",
+            description=description,
+            color=discord.Color.green()
+        )
+        embed.set_footer(text="Note: Timestamps are in local time (YYYY-MM-DD HH:MM).")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
