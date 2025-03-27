@@ -713,6 +713,54 @@ def mark_application_removed(thread_id: str) -> bool:
         if conn:
             conn.close()
 
+def get_open_application(user_id: str) -> Optional[Dict]:
+    """
+    Returns the open application (if any) for the given applicant_id.
+    An open application is defined as a record in application_threads where:
+      - applicant_id equals the provided user_id,
+      - is_closed equals 0, and
+      - status equals 'open'.
+    
+    If an open application exists, returns a dictionary with its data;
+    otherwise, returns None.
+    """
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT thread_id, applicant_id, recruiter_id, starttime, ingame_name,
+                   region, age, level, join_reason, previous_crews, is_closed, status
+            FROM application_threads
+            WHERE applicant_id = ? AND is_closed = 0 AND status = 'open'
+            """,
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            return {
+                "thread_id": row[0],
+                "applicant_id": row[1],
+                "recruiter_id": row[2],
+                "starttime": datetime.fromisoformat(row[3]),
+                "ingame_name": row[4],
+                "region": row[5],
+                "age": row[6],
+                "level": row[7],
+                "join_reason": row[8],
+                "previous_crews": row[9],
+                "is_closed": row[10],
+                "status": row[11]
+            }
+        else:
+            return None
+    except sqlite3.Error as e:
+        log(f"DB Error (get_open_application): {e}", level="error")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
 # -------------------------------
 # APPLICATION ATTEMPTS DATABASE FUNCTIONS
 # -------------------------------
@@ -1184,14 +1232,12 @@ class ApplicationView(discord.ui.View):
     async def request_trainee_role(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id_str = str(interaction.user.id)
         # Check if the user already has an application open (in the pending_applications dict)
-        if get_application_request(user_id_str):   # DB lookup for pending trainee application
+        app_temp = get_open_application(user_id_str)
+        if app_temp:
             await interaction.response.send_message("❌ You already have an open application.", ephemeral=True)
             return
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
-            return
-        if get_application_request(user_id_str):  # DB lookup for pending request  # DB lookup for pending request
-            await interaction.response.send_message("❌ You already have an open request.", ephemeral=True)
             return
         if any(r.id == SWAT_ROLE_ID for r in interaction.user.roles):
             await interaction.response.send_message("❌ You are already SWAT!", ephemeral=True)
@@ -1611,7 +1657,9 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
             embed=embed,
             view=control_view
         )
-
+        
+        remove_application_request(user_id_str)
+        
         # In your add_application call, you can now omit ban_history (pass an empty string, if your DB still expects it)
         add_application(
             thread_id=str(thread.id),

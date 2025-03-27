@@ -11,7 +11,7 @@ from config_testing import (
     RECRUITER_EMOJI, LEADERSHIP_EMOJI, LEAD_BOT_DEVELOPER_EMOJI, ACTIVITY_CHANNEL_ID
 )
 from messages import OPEN_TICKET_EMBED_TEXT
-from cogs.helpers import log, create_user_activity_log_embed
+from cogs.helpers import log, create_user_activity_log_embed, get_stored_embed, set_stored_embed
 
 # -------------------------------
 # Ticket Database Functions
@@ -284,7 +284,6 @@ class TicketCog(commands.Cog):
         bot.add_view(CloseThreadView())
         # Start a task to ensure the ticket embed is present.
         self.ensure_ticket_embed_task.start()
-        self.bot.loop.create_task(self._run_embed_check_on_start())
         # Load existing tickets from DB.
         self.bot.loop.create_task(self.load_existing_tickets())
 
@@ -309,15 +308,10 @@ class TicketCog(commands.Cog):
             log(f"Ticket channel {TICKET_CHANNEL_ID} not found, cannot ensure ticket embed.", level="error")
             return
         stored_embed_id = None
-        if os.path.exists("tickets_embed.json"):
-            try:
-                with open("tickets_embed.json", "r") as f:
-                    data = json.load(f)
-                    stored_embed_id = data.get("embed_id")
-                log(f"Loaded stored ticket embed id: {stored_embed_id}")
-            except (json.JSONDecodeError, IOError) as e:
-                log(f"Error reading tickets_embed.json: {e}", level="error")
-                stored_embed_id = None
+        stored = get_stored_embed("tickets_embed")
+        if stored:
+            stored_embed_id = stored.get("message_id")
+            log(f"Loaded stored ticket embed id from DB: {stored_embed_id}")
         if stored_embed_id:
             try:
                 await channel.fetch_message(stored_embed_id)
@@ -332,8 +326,7 @@ class TicketCog(commands.Cog):
             .replace("{leaddeveloper_emoji}", LEAD_BOT_DEVELOPER_EMOJI)
         embed = discord.Embed(title="🎟️ Open a Ticket", description=description, colour=0x28afcc)
         sent_msg = await channel.send(embed=embed, view=TicketView())
-        with open("tickets_embed.json", "w") as f:
-            json.dump({"embed_id": sent_msg.id}, f)
+        set_stored_embed("tickets_embed", str(sent_msg.id), str(channel.id))
         log(f"New ticket embed created with id {sent_msg.id} in channel {channel.id}.")
 
     async def load_existing_tickets(self):
@@ -466,3 +459,4 @@ class TicketCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TicketCog(bot))
+    log("Tickets cog loaded.")

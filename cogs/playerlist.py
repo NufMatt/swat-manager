@@ -9,9 +9,8 @@ from config_testing import (
     API_URLS, API_URLS_FIVEM, STATUS_CHANNEL_ID, GUILD_ID, MENTOR_ROLE_ID,
     CADET_ROLE, TRAINEE_ROLE, SWAT_ROLE_ID, RANK_HIERARCHY, ROLE_TO_RANK, EMBEDS_FILE
 )
-from cogs.helpers import log  # our unified logging function
+from cogs.helpers import log, set_stored_embed, get_stored_embed
 
-# In your __init__ method of PlayerListCog, add a new attribute:
 class PlayerListCog(commands.Cog):
     """Cog for updating an online player list embed based on external APIs."""
     
@@ -19,18 +18,10 @@ class PlayerListCog(commands.Cog):
         self.bot = bot
         # Cache for Discord members
         self.discord_cache = {"timestamp": None, "members": {}}
-        # Stored embeds for each region loaded from file
-        self.stored_embeds = []
-        try:
-            with open(EMBEDS_FILE, "r") as f:
-                self.stored_embeds = json.load(f)
-        except Exception as e:
-            log(f"Error loading stored embeds: {e}", level="error")
-            self.stored_embeds = []
+        # Removed file-based embed storage; unified embed storage now via helpers.
         # New: Dictionary to track server unreachable state for each region.
         self._server_unreachable = {}
         self.update_game_status.start()
-
 
     def cog_unload(self):
         self.update_game_status.cancel()
@@ -216,49 +207,41 @@ class PlayerListCog(commands.Cog):
         return embed
 
     async def update_or_create_embed_for_region(self, channel, region, embed_pre):
-        found_existing = False
         # Initialize the flag for this region if not already done.
         if region not in self._server_unreachable:
             self._server_unreachable[region] = False
 
-        for em in self.stored_embeds:
-            if em["region"] == region:
-                found_existing = True
-                MAX_RETRIES = 3
-                for attempt in range(1, MAX_RETRIES + 1):
-                    try:
-                        msg = await channel.fetch_message(em["message_id"])
-                        await msg.edit(embed=embed_pre)
-                        await asyncio.sleep(2)
-                        # If we previously flagged the server as unreachable, log that it is now reachable.
-                        if self._server_unreachable.get(region, False):
-                            log(f"Server is reachable again for region {region}.", level="info")
-                            self._server_unreachable[region] = False
+        stored = get_stored_embed(region)
+        if stored:
+            MAX_RETRIES = 3
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    msg = await channel.fetch_message(stored["message_id"])
+                    await msg.edit(embed=embed_pre)
+                    await asyncio.sleep(2)
+                    if self._server_unreachable.get(region, False):
+                        log(f"Server is reachable again for region {region}.", level="info")
+                        self._server_unreachable[region] = False
+                    break
+                except discord.HTTPException as e:
+                    if e.status == 503:
+                        if not self._server_unreachable.get(region, False):
+                            log(f"Discord 503 on attempt {attempt} for region {region} while editing embed: {e}", level="error")
+                            self._server_unreachable[region] = True
+                        if attempt == MAX_RETRIES:
+                            log(f"Max retries reached for region {region} (edit failed)", level="error")
+                    else:
+                        log(f"HTTPException while editing embed for region {region}: {e}", level="error")
                         break
-                    except discord.HTTPException as e:
-                        if e.status == 503:
-                            if not self._server_unreachable.get(region, False):
-                                log(f"Discord 503 on attempt {attempt} for region {region} while editing embed: {e}", level="error")
-                                self._server_unreachable[region] = True
-                            if attempt == MAX_RETRIES:
-                                log(f"Max retries reached for region {region} (edit failed)", level="error")
-                        else:
-                            log(f"HTTPException while editing embed for region {region}: {e}", level="error")
-                            break
-                    except Exception as ex:
-                        log(f"Unexpected error editing embed for region {region}: {ex}", level="error")
-                        break
-                break
-        if not found_existing:
+                except Exception as ex:
+                    log(f"Unexpected error editing embed for region {region}: {ex}", level="error")
+                    break
+        else:
             MAX_RETRIES = 3
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     msg_send = await channel.send(embed=embed_pre)
-                    self.stored_embeds.append({
-                        "region": region,
-                        "channel_id": msg_send.channel.id,
-                        "message_id": msg_send.id
-                    })
+                    set_stored_embed(region, str(msg_send.id), str(msg_send.channel.id))
                     await asyncio.sleep(1)
                     if self._server_unreachable.get(region, False):
                         log(f"Server is reachable again for region {region}.", level="info")
@@ -359,11 +342,7 @@ class PlayerListCog(commands.Cog):
             embed_pre = await self.create_embed(region, matching_players, queue_data, fivem_data)
             await asyncio.sleep(1)
             await self.update_or_create_embed_for_region(channel, region, embed_pre)
-        try:
-            with open(EMBEDS_FILE, "w") as f:
-                json.dump(self.stored_embeds, f)
-        except Exception as e:
-            log(f"Error writing to {EMBEDS_FILE}: {e}", level="error")
+        # Removed file-based storage write; unified embed storage handles persistence.
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PlayerListCog(bot))
