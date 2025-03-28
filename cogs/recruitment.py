@@ -486,7 +486,6 @@ def migrate_old_application_data():
 migrate_old_application_data()
 """
 
-
 def init_applications_db():
     try:
         conn = sqlite3.connect(DATABASE_FILE)
@@ -494,30 +493,30 @@ def init_applications_db():
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS application_threads (
-                thread_id     TEXT PRIMARY KEY,
-                applicant_id  TEXT NOT NULL,
-                recruiter_id  TEXT,
-                starttime     TEXT NOT NULL,
-                ingame_name   TEXT NOT NULL,
-                region        TEXT NOT NULL,
-                age           TEXT NOT NULL,
-                level         TEXT NOT NULL,
-                join_reason   TEXT NOT NULL,
-                previous_crews TEXT,
-                is_closed     INTEGER DEFAULT 0,
-                status        TEXT NOT NULL DEFAULT 'open'
+                thread_id                     TEXT PRIMARY KEY,
+                applicant_id                  TEXT NOT NULL,
+                recruiter_id                  TEXT,
+                starttime                     TEXT NOT NULL,
+                ingame_name                   TEXT NOT NULL,
+                region                        TEXT NOT NULL,
+                age                           TEXT NOT NULL,
+                level                         TEXT NOT NULL,
+                join_reason                   TEXT NOT NULL,
+                previous_crews                TEXT,
+                is_closed                     INTEGER DEFAULT 0,
+                status                        TEXT NOT NULL DEFAULT 'open',
+                ban_history_sent              INTEGER DEFAULT 0,
+                ban_history_reminder_count    INTEGER DEFAULT 0
             )
             """
         )
-
         conn.commit()
-        log("Applications DB (application_threads) initialized successfully.")
+        log("Applications DB (application_threads) initialized successfully with new ban history columns.")
     except sqlite3.Error as e:
         log(f"Applications DB Error: {e}", level="error")
     finally:
         if conn:
             conn.close()
-
 
 init_applications_db()
 
@@ -1073,63 +1072,30 @@ async def create_voting_embed(start_time, end_time, recruiter: int, region, inga
 # -------------------------------
 class ApplicationControlView(discord.ui.View):
     """
-    Buttons: 'Claim' (recruiter can claim) and 'Withdraw' (applicant can withdraw).
-    Now uses the DB instead of storing applicant_id in memory.
+    Updated view with four buttons in the following order:
+    Withdraw (danger) → Accept (success) → Claim (primary) → History (secondary)
     """
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="Claim", 
-        style=discord.ButtonStyle.primary, 
-        custom_id="app_claim"  # a fixed custom_id that never changes
-    )
-    async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Look up application data in DB using the thread ID:
-        app_data = get_application(str(interaction.channel.id))
-        if not app_data:
-            await interaction.response.send_message("❌ No application data found for this thread!", ephemeral=True)
-            return
-
-        # Check if the user has the Recruiter role:
-        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
-        if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.response.send_message("❌ Only recruiters can claim this application!", ephemeral=True)
-            return
-
-        # Update DB to mark the current user as the recruiter:
-        updated = update_application_recruiter(str(interaction.channel.id), str(interaction.user.id))
-        if updated:
-            await interaction.response.send_message(
-                f"✅ {interaction.user.mention} has claimed this application."
-            )
-        else:
-            await interaction.response.send_message("❌ Failed to update recruiter in DB!", ephemeral=True)
-
-    @discord.ui.button(
-        label="Withdraw", 
-        style=discord.ButtonStyle.danger, 
-        custom_id="app_withdraw"  # a fixed custom_id that never changes
+        label="Withdraw",
+        style=discord.ButtonStyle.danger,
+        custom_id="app_withdraw"
     )
     async def withdraw_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Again, look up the DB record
+        # (Existing Withdraw logic remains unchanged)
         app_data = get_application(str(interaction.channel.id))
         if not app_data:
             await interaction.response.send_message("❌ No application data found for this thread!", ephemeral=True)
             return
-
-        # Only the original applicant can withdraw:
         if interaction.user.id != int(app_data["applicant_id"]):
             await interaction.response.send_message("❌ You are not the owner of this application!", ephemeral=True)
             return
-
-        # Mark is_closed=1 in DB:
         closed = close_application(str(interaction.channel.id))
         if not closed:
             await interaction.response.send_message("❌ Could not close or already closed in DB!", ephemeral=True)
             return
-
-        # Lock/archive the thread:
         embed = discord.Embed(
             title=f"Application withdrawn by {interaction.user.display_name}",
             colour=0xf51616
@@ -1139,17 +1105,71 @@ class ApplicationControlView(discord.ui.View):
         update_application_status(str(interaction.channel.id), 'withdrawn')
         activity_channel = interaction.guild.get_channel(ACTIVITY_CHANNEL_ID)
         if activity_channel:
-            embed = create_user_activity_log_embed("recruitment", f"Application Withdrawn", interaction.user, f"User has withdrawn an application. (Thread ID: <#{interaction.channel.id}>)")
-            await activity_channel.send(embed=embed)
-
+            log_embed = create_user_activity_log_embed("recruitment", "Application Withdrawn", interaction.user, f"User has withdrawn an application. (Thread ID: <#{interaction.channel.id}>)")
+            await activity_channel.send(embed=log_embed)
         try:
             await interaction.channel.edit(locked=True, archived=True)
         except discord.Forbidden:
             await interaction.response.send_message("❌ Bot lacks permission to lock/archive this thread!", ephemeral=True)
+
+    @discord.ui.button(
+        label="Accept",
+        style=discord.ButtonStyle.success,
+        custom_id="app_accept"
+    )
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """
+        Calls the same logic as /app_accept.
+        """
+        cog = interaction.client.get_cog("RecruitmentCog")
+        if not cog:
+            await interaction.response.send_message("❌ Internal error: Cog not found!", ephemeral=True)
             return
-        except discord.HTTPException as e:
-            await interaction.response.send_message(f"❌ HTTP error: {e}", ephemeral=True)
+        # Call the accept command's callback.
+        await cog.app_accept_command.callback(cog, interaction)
+
+    @discord.ui.button(
+        label="Claim",
+        style=discord.ButtonStyle.primary,
+        custom_id="app_claim"
+    )
+    async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # (Existing Claim logic remains unchanged)
+        app_data = get_application(str(interaction.channel.id))
+        if not app_data:
+            await interaction.response.send_message("❌ No application data found for this thread!", ephemeral=True)
             return
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ Only recruiters can claim this application!", ephemeral=True)
+            return
+        updated = update_application_recruiter(str(interaction.channel.id), str(interaction.user.id))
+        if updated:
+            await interaction.response.send_message(f"✅ {interaction.user.mention} has claimed this application.")
+        else:
+            await interaction.response.send_message("❌ Failed to update recruiter in DB!", ephemeral=True)
+
+    @discord.ui.button(
+        label="History",
+        style=discord.ButtonStyle.secondary,
+        custom_id="app_history"
+    )
+    async def history_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """
+        Calls the same logic as /app_history.
+        """
+        cog = interaction.client.get_cog("RecruitmentCog")
+        if not cog:
+            await interaction.response.send_message("❌ Internal error: Cog not found!", ephemeral=True)
+            return
+        app_data = get_application(str(interaction.channel.id))
+        if not app_data:
+            await interaction.response.send_message("❌ No application data found for this thread!", ephemeral=True)
+            return
+        user_id_str = app_data["applicant_id"]
+        # Instead of calling the command directly, we use its callback.
+        await cog.app_history.callback(cog, interaction, user_id_str)
+
 
 
 
@@ -1730,8 +1750,7 @@ class RecruitmentCog(commands.Cog):
         self.check_embed_task.start()
         self.check_application_embed_task.start()
         self.check_expired_endtimes_task.start()
-        self.check_ban_history_reminder.start()
-        self.check_claimed_application_reminders.start()
+        self.check_ban_history_and_application_reminders.start()
         await self.load_existing_tickets()
         log("RecruitmentCog setup complete. All tasks started.")
 
@@ -1858,46 +1877,97 @@ class RecruitmentCog(commands.Cog):
         # For recruitment, if you need to load active requests, do so here.
         pass
 
-    @tasks.loop(minutes=30)
-    async def check_ban_history_reminder(self):
-        # Open a connection to the applications DB
+    @tasks.loop(minutes=1)  # For testing; change timedelta(minutes=1) to timedelta(hours=24) in production
+    async def check_ban_history_and_application_reminders(self):
+        # Open a connection and fetch threads including the two new columns.
         conn = sqlite3.connect(DATABASE_FILE)
         cursor = conn.cursor()
-        # Select all application threads that are still open
-        cursor.execute("SELECT thread_id, applicant_id, starttime FROM application_threads WHERE is_closed = 0")
+        cursor.execute(
+            "SELECT thread_id, applicant_id, recruiter_id, starttime, ban_history_sent, ban_history_reminder_count FROM application_threads WHERE is_closed = 0"
+        )
         rows = cursor.fetchall()
         conn.close()
 
         now = datetime.now()
-        for thread_id, applicant_id, starttime in rows:
-            # Only remind if the thread hasn't yet submitted ban history
-            
-            if int(thread_id) in self.ban_history_submitted:
+        # Use an in‑memory dictionary to track the last reminder sent per thread.
+        if not hasattr(self, "reminder_times"):
+            self.reminder_times = {}
+
+        for thread_id, applicant_id, recruiter_id, starttime, ban_history_sent, ban_history_reminder_count in rows:
+            # Skip if a reminder was sent less than 1 minute ago (for testing; use 24 hours in production)
+            last_rem = self.reminder_times.get(thread_id)
+            if last_rem and (now - last_rem) < timedelta(minutes=1):
                 continue
 
-            # Check if more than 24 hours have passed (you can adjust as needed)
             start = datetime.fromisoformat(starttime)
-            if now - start > timedelta(hours=24):
+            # Only process threads that have been open long enough (1 minute for testing; use 24 hours in production)
+            if now - start > timedelta(minutes=1):
                 thread = self.bot.get_channel(int(thread_id))
                 if thread and isinstance(thread, discord.Thread):
-                    await thread.send(f"<@{applicant_id}> Reminder: Please post your ban history (as an image) in this thread.")
+                    # If the ban history has been sent, just ping recruiters.
+                    if ban_history_sent == 1:
+                        embed = discord.Embed(
+                            title="⏰ Reminder: This application is still open and awaiting review.",
+                            colour=0xefe410
+                        )
+                        if recruiter_id:
+                            msg = f"<@{recruiter_id}>"
+                        else:
+                            msg = f"<@&{RECRUITER_ID}>"
+                        try:
+                            await thread.send(content=msg, embed=embed)
+                        except Exception as e:
+                            log(f"Error sending reminder in thread {thread_id}: {e}", level="error")
+                    else:
+                        # Ban history has NOT been sent.
+                        if ban_history_reminder_count < 2:
+                            # First two reminders: ping only the applicant.
+                            embed = discord.Embed(
+                                title="⏰ Reminder: Please post your ban history as a picture in this thread!",
+                                colour=0xefe410
+                            )
+                            msg = f"<@{applicant_id}>"
+                            # Update the reminder count in the database.
+                            new_count = ban_history_reminder_count + 1
+                            conn = sqlite3.connect(DATABASE_FILE)
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                "UPDATE application_threads SET ban_history_reminder_count = ? WHERE thread_id = ?",
+                                (new_count, thread_id)
+                            )
+                            conn.commit()
+                            conn.close()
+                            try:
+                                await thread.send(content=msg, embed=embed)
+                            except Exception as e:
+                                log(f"Error sending reminder in thread {thread_id}: {e}", level="error")
+                        elif ban_history_reminder_count == 2:
+                            # After two reminders, send one final reminder pinging recruiters.
+                            embed = discord.Embed(
+                                title="⏰ Final Reminder: User has not provided a ban history after elapsed time.",
+                                colour=0xefe410
+                            )
+                            if recruiter_id:
+                                msg = f"<@{applicant_id}> <@{recruiter_id}>"
+                            else:
+                                msg = f"<@{applicant_id}> <@&{RECRUITER_ID}>"
+                            new_count = ban_history_reminder_count + 1
+                            conn = sqlite3.connect(DATABASE_FILE)
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                "UPDATE application_threads SET ban_history_reminder_count = ? WHERE thread_id = ?",
+                                (new_count, thread_id)
+                            )
+                            conn.commit()
+                            conn.close()
+                            try:
+                                await thread.send(content=msg, embed=embed)
+                            except Exception as e:
+                                log(f"Error sending reminder in thread {thread_id}: {e}", level="error")
+                    self.reminder_times[thread_id] = now
 
-    @tasks.loop(minutes=30)
-    async def check_claimed_application_reminders(self):
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        # Select threads that are still open and have a recruiter (non-empty recruiter_id)
-        cursor.execute("SELECT thread_id, starttime FROM application_threads WHERE is_closed = 0 AND recruiter_id != ''")
-        rows = cursor.fetchall()
-        conn.close()
-        now = datetime.now()
-        for thread_id, starttime in rows:
-            last_reminder = self.claimed_reminders.get(thread_id)
-            if not last_reminder or (now - last_reminder) > timedelta(hours=24):
-                thread = self.bot.get_channel(int(thread_id))
-                if thread and isinstance(thread, discord.Thread):
-                    await thread.send("⏰ Reminder: This application is still open and awaiting review.")
-                    self.claimed_reminders[thread_id] = now
+
+
 
 
 #
@@ -1940,15 +2010,86 @@ class RecruitmentCog(commands.Cog):
                     is_image = True
             if is_image:
                 # If we have not yet confirmed ban history for this thread, send confirmation.
+                conn = sqlite3.connect(DATABASE_FILE)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE application_threads SET ban_history_sent = ? WHERE thread_id = ?",
+                    (1, message.channel.id)
+                )
+                conn.commit()
+                conn.close()
                 if message.channel.id not in self.ban_history_submitted:
                     confirmation = discord.Embed(
                         title="✅ Ban History Submitted!",
                         description="Your ban history has been received. A recruiter will review your application shortly.",
                         color=discord.Color.green()
                     )
-                    await message.channel.send(f"<@&{RECRUITER_ID}> {message.author.mention}", embed=confirmation)
+                    await message.channel.send(embed=confirmation)
                     self.ban_history_submitted.add(message.channel.id)
                 break
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        """
+        When a member leaves the server, check if they have any open applications.
+        If yes, send a reminder message in each application's thread:
+          - If the application is claimed (i.e. recruiter_id exists), the message pings the user.
+          - If unclaimed, just send the embed.
+        Also, log this event so it appears in the application history.
+        """
+        # Open a connection and find open applications for the leaving member.
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT thread_id, recruiter_id, starttime, ingame_name, region 
+            FROM application_threads 
+            WHERE applicant_id = ? AND is_closed = 0 AND status = 'open'
+            """,
+            (str(member.id),)
+        )
+        open_apps = cursor.fetchall()
+        conn.close()
+
+        if not open_apps:
+            return  # No open application for this member.
+
+        # For each open application thread, send the reminder message.
+        for thread_id, recruiter_id, starttime, ingame_name, region in open_apps:
+            thread = self.bot.get_channel(int(thread_id))
+            if thread and isinstance(thread, discord.Thread):
+                embed = discord.Embed(
+                    title="🛫 User has left the discord!",
+                    description="",
+                    colour=discord.Color.red()
+                )
+                # If the application is claimed, ping the user (even though they left, the mention may help recruiters follow up).
+                # Otherwise, no ping.
+                conn = sqlite3.connect(DATABASE_FILE)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE application_threads SET ban_history_sent = ? WHERE thread_id = ?",
+                    (1, thread_id)
+                )
+                conn.commit()
+                conn.close()
+                if recruiter_id:
+                    content = f"<@{recruiter_id}>"
+                else:
+                    content = ""
+                try:
+                    await thread.send(content=content, embed=embed)
+                except Exception as e:
+                    log(f"Error sending open application alert in thread {thread_id}: {e}", level="error")
+
+                # Log this event so it appears in /history.
+                # For example, we add an application attempt with a status indicating the member left with an open application.
+                add_application_attempt(
+                    applicant_id=str(member.id),
+                    region=region,
+                    status="left_with_open_application",
+                    log_url=f"https://discord.com/channels/{GUILD_ID}/{thread_id}"  # URL to the thread
+                )
 
     @app_commands.command(name="hello", description="Say hello to the bot")
     async def hello_command(self, interaction: discord.Interaction):
@@ -2291,6 +2432,18 @@ class RecruitmentCog(commands.Cog):
                     msg = await interaction.channel.fetch_message(int(data["embed_id"]))
                     new_embed = await create_voting_embed(data["starttime"], new_end, int(data["recruiter_id"]), data["region"], data["ingame_name"], extended=True)
                     await msg.edit(embed=new_embed)
+                    conn = sqlite3.connect(DATABASE_FILE)
+                    cursor = conn.cursor()                   
+                    cursor.execute(
+                        """
+                        UPDATE entries 
+                        SET reminder_sent = 0
+                        WHERE thread_id = ?
+                        """,
+                        (interaction.channel.id,)
+                    )
+                    conn.commit()
+
                 except discord.NotFound:
                     await interaction.response.send_message("❌ Voting embed message not found.", ephemeral=True)
                     return
@@ -2507,17 +2660,17 @@ class RecruitmentCog(commands.Cog):
             await interaction.followup.send("❌ This application is already closed!", ephemeral=True)
             return
 
-        # If the application is not claimed, automatically claim it:
-        if not app_data.get("recruiter_id"):
-            update_application_recruiter(str(interaction.channel.id), str(interaction.user.id))
-            app_data["recruiter_id"] = str(interaction.user.id)
-            await interaction.followup.send("ℹ️ Application was unclaimed. It has now been claimed by you.", ephemeral=True)
-
         # Check if the user issuing command is a Recruiter
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
         if not recruiter_role or recruiter_role not in interaction.user.roles:
             await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
             return
+
+        # If the application is not claimed, automatically claim it:
+        if not app_data.get("recruiter_id"):
+            update_application_recruiter(str(interaction.channel.id), str(interaction.user.id))
+            app_data["recruiter_id"] = str(interaction.user.id)
+            await interaction.followup.send("ℹ️ Application was unclaimed. It has now been claimed by you.", ephemeral=True)
 
         # Now do the "Trainee add" logic:
         applicant_id = int(app_data["applicant_id"])
