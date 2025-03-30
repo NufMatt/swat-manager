@@ -7,12 +7,10 @@ from datetime import datetime, timedelta
 from config_testing import (
     USE_LOCAL_JSON, LOCAL_JSON_FILE, CHECK_INTERVAL, CACHE_UPDATE_INTERVAL,
     API_URLS, API_URLS_FIVEM, STATUS_CHANNEL_ID, GUILD_ID, MENTOR_ROLE_ID,
-    CADET_ROLE, TRAINEE_ROLE, SWAT_ROLE_ID, RANK_HIERARCHY, ROLE_TO_RANK, EMBEDS_FILE
+    CADET_ROLE, TRAINEE_ROLE, SWAT_ROLE_ID, RANK_HIERARCHY, ROLE_TO_RANK, EMBEDS_FILE, LEADERSHIP_ID
 )
 from cogs.helpers import log, set_stored_embed, get_stored_embed
 
-# Replace "Leadership" with the actual leadership role name or use a role ID check if desired.
-LEADERSHIP_ROLE_NAME = "Leadership"
 
 class PlayerListCog(commands.Cog):
     """Cog for updating an online player list embed based on external APIs,
@@ -458,7 +456,7 @@ class PlayerListCog(commands.Cog):
         return " ".join(parts)
 
     @commands.hybrid_command(name="topplaytime", description="Shows top playtime for SWAT members in the given timeframe (days).")
-    @commands.has_role(LEADERSHIP_ROLE_NAME)
+    @commands.has_role(LEADERSHIP_ID)
     async def topplaytime(self, ctx: commands.Context, days: int):
         cutoff = datetime.utcnow() - timedelta(days=days)
         cutoff_iso = cutoff.isoformat()
@@ -492,7 +490,7 @@ class PlayerListCog(commands.Cog):
         await ctx.send(embed=embed, ephemeral=True)
 
     @commands.hybrid_command(name="player", description="Shows playtime, last seen and past names for the specified player.")
-    @commands.has_role(LEADERSHIP_ROLE_NAME)
+    @commands.has_role(LEADERSHIP_ID)
     async def player(self, ctx: commands.Context, *, name: str):
         try:
             cur = self.db_conn.cursor()
@@ -518,7 +516,25 @@ class PlayerListCog(commands.Cog):
             # Look up the last seen time from playtime_log.
             cur.execute("SELECT MAX(log_time) as last_seen FROM playtime_log WHERE uid = ?", (uid,))
             last_seen_row = cur.fetchone()
-            last_seen = last_seen_row["last_seen"] if last_seen_row and last_seen_row["last_seen"] else "Unknown"
+            if last_seen_row and last_seen_row["last_seen"]:
+                try:
+                    last_seen_dt = datetime.fromisoformat(last_seen_row["last_seen"])
+                    now_dt = datetime.utcnow()
+                    diff = now_dt - last_seen_dt
+                    if diff < timedelta(hours=24):
+                        total_seconds = diff.total_seconds()
+                        if total_seconds < 3600:
+                            minutes = int(total_seconds // 60)
+                            last_seen = f"{minutes} min ago"
+                        else:
+                            hours = int(total_seconds // 3600)
+                            last_seen = f"{hours} hour{'s' if hours != 1 else ''} ago"
+                    else:
+                        last_seen = last_seen_dt.strftime("%d.%m.%Y - %H:%M")
+                except Exception as e:
+                    last_seen = last_seen_row["last_seen"]
+            else:
+                last_seen = "Unknown"
 
             cur.execute("""
                 SELECT old_name, new_name, change_time FROM name_changes
