@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from config_testing import (
     USE_LOCAL_JSON, LOCAL_JSON_FILE, CHECK_INTERVAL, CACHE_UPDATE_INTERVAL,
     API_URLS, API_URLS_FIVEM, STATUS_CHANNEL_ID, GUILD_ID, MENTOR_ROLE_ID,
-    CADET_ROLE, TRAINEE_ROLE, SWAT_ROLE_ID, RANK_HIERARCHY, ROLE_TO_RANK, EMBEDS_FILE, LEADERSHIP_ID
+    CADET_ROLE, TRAINEE_ROLE, SWAT_ROLE_ID, RANK_HIERARCHY, ROLE_TO_RANK, EMBEDS_FILE, LEADERSHIP_ID, LEADERSHIP_EMOJI
 )
 from cogs.helpers import log, set_stored_embed, get_stored_embed
 
@@ -340,9 +340,12 @@ class PlayerListCog(commands.Cog):
                             compare_dn = re.sub(r'\s*\[SWAT\]$', '', discord_name, flags=re.IGNORECASE)
                             if cleaned_name.lower() == compare_dn.lower():
                                 discord_found = True
+                                # Check if the member has the leadership role and prepend the icon if so.
+                                is_leader = LEADERSHIP_ID in details["roles"]
+                                display_name = f"{LEADERSHIP_EMOJI} {username}" if is_leader else username
                                 mtype = "mentor" if MENTOR_ROLE_ID in details["roles"] else "SWAT"
                                 matching_players.append({
-                                    "username": username,
+                                    "username": display_name,
                                     "type": mtype,
                                     "discord_id": details["id"],
                                     "rank": self.get_rank_from_roles(details["roles"])
