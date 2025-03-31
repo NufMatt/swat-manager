@@ -38,6 +38,10 @@ Once again, **well done on making it this far—welcome to the team!** This crew
 If you're **ever in need of any help**, reach out to any **S.W.A.T Member** or **S.W.A.T Leadership** by opening a  **[#Support Ticket](https://discord.com/channels/958271853158350850/1303104817228677150)**  .  
 
 Now go represent SWAT with pride! 🚀
+
+https://www.cnrswat.com/onboardingfeedback
+Password: Trainee2024
+Please fill this feedback form to help us improve our onboarding stage for other recruits!
 """
 
 trainee_messages = [
