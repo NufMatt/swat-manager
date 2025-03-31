@@ -1,8 +1,9 @@
 import discord
-from discord.ext import commands
+from discord import app_commands, ButtonStyle, Interaction
+from discord.ext import commands, tasks
 import asyncio
 from config_testing import TOKEN_FILE
-from cogs.helpers import log
+from cogs.helpers import *
 with open(TOKEN_FILE, "r", encoding="utf-8") as file:
     TOKEN = file.read().strip()
 
@@ -12,6 +13,41 @@ intents.members = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.tree.command(name="reload_cog", description="Reload a specified cog. (Owner only)")
+async def reload_cog_command(interaction: discord.Interaction, cog_name: str):
+    """Reload a given cog file without restarting the bot."""
+    # 1) Optional: restrict usage to the correct guild
+    if not is_in_correct_guild(interaction):
+        await interaction.response.send_message(
+            "❌ This command can only be used in the specified guild.",
+            ephemeral=True
+        )
+        return
+
+    # 2) Check if the user is the bot owner
+    #    (bot.is_owner() is async; we do `interaction.client` which is your bot.)
+    if not await interaction.client.is_owner(interaction.user):
+        await interaction.response.send_message(
+            "❌ You do not have permission to reload cogs.",
+            ephemeral=True
+        )
+        return
+
+    # 3) Attempt to reload the cog
+    try:
+        await interaction.client.reload_extension(cog_name)
+        await interaction.response.send_message(
+            f"✅ Successfully reloaded `{cog_name}`",
+            ephemeral=True
+        )
+    except Exception as e:
+        # 4) If reload fails, send an ephemeral error
+        await interaction.response.send_message(
+            f"❌ Failed to reload `{cog_name}`:\n```\n{e}\n```",
+            ephemeral=True
+        )
+
 
 @bot.event
 async def on_ready():

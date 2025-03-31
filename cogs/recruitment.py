@@ -1275,7 +1275,16 @@ class ApplicationView(discord.ui.View):
 
 
 class RequestActionView(discord.ui.View):
-    def __init__(self, user_id: int = None, request_type: str = None, ingame_name: str = None, recruiter: str = None, new_name: str = None, region: str = None):
+    def __init__(
+        self,
+        user_id: int = None,
+        request_type: str = None,
+        ingame_name: str = None,
+        recruiter: str = None,
+        new_name: str = None,
+        region: str = None,
+        timestamp: str = None  # <-- Store timestamp here
+    ):
         super().__init__(timeout=None)
         self.user_id = user_id
         self.request_type = request_type
@@ -1283,30 +1292,122 @@ class RequestActionView(discord.ui.View):
         self.new_name = new_name
         self.recruiter = recruiter
         self.region = region
+        self.timestamp = timestamp  # Save it for later DM usage
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="request_accept")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
         if not is_in_correct_guild(interaction):
-            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ This command can only be used in the specified guild.",
+                ephemeral=True
+            )
             return
+
         if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.",
+                ephemeral=True
+            )
             return
+
         try:
             embed = interaction.message.embeds[0]
             embed.color = discord.Color.green()
+            # Append text to the title so it’s clear that it’s been accepted
             if self.request_type in ["name_change", "other"]:
                 embed.title += " (Done)"
             else:
                 embed.title += " (Accepted)"
-            embed.add_field(name="Handled by:", value=f"<@{interaction.user.id}>", inline=False)
+
+            embed.add_field(
+                name="Handled by:",
+                value=f"<@{interaction.user.id}>",
+                inline=False
+            )
+
+            # Update the original request message
+            await interaction.message.edit(embed=embed, view=None)
+
+            # Remove it from the pending list
             remove_role_request(str(self.user_id))
-            
+
+            # DM the user about the acceptance
+            user = interaction.client.get_user(self.user_id)
+            if user is not None:
+                # Build an embed for the DM
+                if self.request_type == "name_change":
+                    dm_embed = discord.Embed(
+                        title="Your Name Change Request has been Accepted",
+                        color=discord.Color.green()
+                    )
+                elif self.request_type == "other":
+                    dm_embed = discord.Embed(
+                        title="Your Other Request has been Accepted",
+                        color=discord.Color.green()
+                    )
+                else:
+                    dm_embed = discord.Embed(
+                        title=f"Your {self.request_type.capitalize()} Request has been Accepted",
+                        color=discord.Color.green()
+                    )
+
+                # Show some details depending on request_type
+                # For example, if it's a name change:
+                if self.request_type == "name_change":
+                    dm_embed.add_field(
+                        name="New Name Requested",
+                        value=self.new_name or "Unknown",
+                        inline=False
+                    )
+                else:
+                    # If it's "other," you might add whatever "details" you saved
+                    dm_embed.add_field(
+                        name="Request Details",
+                        value="(Custom details go here...)",
+                        inline=False
+                    )
+
+                # Include the timestamp
+                if self.timestamp:
+                    dm_embed.add_field(
+                        name="Opened At",
+                        value=self.timestamp,
+                        inline=False
+                    )
+
+                try:
+                    await user.send(embed=dm_embed)
+                except discord.Forbidden:
+                    # The user might have DMs turned off
+                    await interaction.followup.send(
+                        f"⚠ Could not send a DM to <@{self.user_id}> (they may have DMs blocked).",
+                        ephemeral=True
+                    )
+            else:
+                # If you can't find the user object, notify the staff ephemeral
+                await interaction.followup.send(
+                    f"⚠ Could not find the user (ID: {self.user_id}) in cache. No DM was sent.",
+                    ephemeral=True
+                )
+
+            # Finally, let the staff member know the request was accepted
+            await interaction.response.send_message(
+                "✅ The request has been accepted.",
+                ephemeral=True
+            )
+
         except IndexError:
-            await interaction.response.send_message("❌ No embed found on this message.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ No embed found on this message.",
+                ephemeral=True
+            )
         except Exception as e:
-            await interaction.response.send_message(f"❌ Error accepting request: {e}", ephemeral=True)
+            await interaction.response.send_message(
+                f"❌ Error accepting request: {e}",
+                ephemeral=True
+            )
+
 
     @discord.ui.button(label="Ignore", style=discord.ButtonStyle.danger, custom_id="request_ignore")
     async def ignore_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1338,7 +1439,8 @@ class RequestActionView(discord.ui.View):
     async def deny_with_reason(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
-            return        
+            return
+
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
         leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
         if self.request_type in ["name_change", "other"]:
@@ -1349,15 +1451,29 @@ class RequestActionView(discord.ui.View):
             if not recruiter_role or (recruiter_role not in interaction.user.roles):
                 await interaction.response.send_message("❌ You do not have permission to deny this request.", ephemeral=True)
                 return
-        modal = DenyReasonModal(self.user_id, original_message=interaction.message)
+
+        # Here: pass request_type, timestamp, or anything else you need
+        modal = DenyReasonModal(
+            user_id=self.user_id,
+            original_message=interaction.message,
+            request_type=self.request_type,  
+            timestamp=self.timestamp
+        )
         await interaction.response.send_modal(modal)
 
-
 class DenyReasonModal(discord.ui.Modal):
-    def __init__(self, user_id: int, original_message: discord.Message):
+    def __init__(
+        self,
+        user_id: int,
+        original_message: discord.Message,
+        request_type: str = None,
+        timestamp: str = None
+    ):
         super().__init__(title="Denial Reason")
         self.user_id = user_id
         self.original_message = original_message
+        self.request_type = request_type      # optional
+        self.timestamp = timestamp            # optional
 
     reason = discord.ui.TextInput(
         label="Reason for Denial",
@@ -1371,18 +1487,47 @@ class DenyReasonModal(discord.ui.Modal):
 
         # Attempt to DM the user
         user = interaction.client.get_user(self.user_id)
+        dm_sent = False
         if user:
             try:
-                await user.send(
-                    f"Your request has been **denied** for the following reason:\n"
-                    f"```\n{reason_text}\n```"
-                )
-            except discord.Forbidden:
-                log(f"Could not DM user {self.user_id}; user may have DMs blocked.")
+                if self.request_type == "name_change":
+                    dm_embed = discord.Embed(
+                        title="Your Name Change Request has been Denied",
+                        color=discord.Color.red()
+                    )
+                elif self.request_type == "other":
+                    dm_embed = discord.Embed(
+                        title="Your Other Request has been Denied",
+                        color=discord.Color.red()
+                    )
+                else:
+                    dm_embed = discord.Embed(
+                        title=f"Your {self.request_type.capitalize()} Request has been Denied",
+                        color=discord.Color.red()
+                    )
 
-        # Update the original request embed with denial details
+                dm_embed.add_field(
+                    name="Reason for Denial",
+                    value=reason_text,
+                    inline=False
+                )
+                if self.timestamp:
+                    dm_embed.add_field(
+                        name="Opened At",
+                        value=self.timestamp,
+                        inline=False
+                    )
+                await user.send(embed=dm_embed)
+                dm_sent = True
+            except discord.Forbidden:
+                # DM failed, but do not respond here because we want to send one final response later.
+                dm_sent = False
+        else:
+            # User not found; we'll let the staff know via our final message.
+            dm_sent = False
+
+        # Update the original request embed in the channel
         try:
-            # Get the embed from the stored message
             if self.original_message.embeds:
                 updated_embed = self.original_message.embeds[0]
             else:
@@ -1393,12 +1538,30 @@ class DenyReasonModal(discord.ui.Modal):
             updated_embed.add_field(name="Denied by:", value=f"<@{interaction.user.id}>", inline=False)
             await self.original_message.edit(embed=updated_embed, view=None)
         except Exception as e:
-            log(f"Failed to update original message: {e}", level="error")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    f"❌ Failed to update the message in the channel: {e}",
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    f"❌ Failed to update the message in the channel: {e}",
+                    ephemeral=True
+                )
+            return
 
-        # Remove the role request entry from the database.
+        # Remove the role request entry from the database
         remove_role_request(str(self.user_id))
 
-        await interaction.response.send_message("✅ Denial reason submitted. User has been notified.", ephemeral=True)
+        # Finally, send a single confirmation response
+        final_msg = (
+            "✅ Denial reason submitted. " +
+            ("User has been notified via DM." if dm_sent else "Could not DM the user (they may have DMs blocked).")
+        )
+        if not interaction.response.is_done():
+            await interaction.response.send_message(final_msg, ephemeral=True)
+        else:
+            await interaction.followup.send(final_msg, ephemeral=True)
 
 
 class RegionSelectionView(discord.ui.View):
@@ -1531,7 +1694,8 @@ class NameChangeModal(discord.ui.Modal, title="Request Name Change"):
             view = RequestActionView(
                 user_id=interaction.user.id,
                 request_type="name_change",
-                new_name=self.new_name.value
+                new_name=self.new_name.value,
+                timestamp=interaction.created_at.strftime("%Y-%m-%d %H:%M:%S")  # Pass the timestamp here
             )
             await channel.send(embed=embed, view=view)
             await interaction.response.send_message("✅ Submitting successful!", ephemeral=True)
@@ -1562,8 +1726,9 @@ class RequestOther(discord.ui.Modal, title="RequestOther"):
             embed.add_field(name="Make sure to actually ADD the ROLE BEFORE clicking accept!", value="", inline=False)
             view = RequestActionView(
                 user_id=interaction.user.id,
-                request_type="other",
-                new_name=self.other.value
+                request_type="name_change",
+                new_name=self.other.value,
+                timestamp=interaction.created_at.strftime("%Y-%m-%d %H:%M:%S")  # Pass the timestamp here
             )
             await channel.send(embed=embed, view=view)
             await interaction.response.send_message("✅ Submitting successful!", ephemeral=True)
@@ -2150,27 +2315,46 @@ class RecruitmentCog(commands.Cog):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
             return
+        
         guild = interaction.client.get_guild(GUILD_ID)
         leadership_role = guild.get_role(LEADERSHIP_ID) if guild else None
         if not leadership_role or leadership_role not in interaction.user.roles:
             await interaction.response.send_message("❌ You do not have permission to list requests.", ephemeral=True)
             return
+        
         await interaction.response.defer(ephemeral=True)
-        pending_requests = get_role_requests()
+        
+        pending_requests = get_role_requests()  # Returns a list of dicts
         if not pending_requests:
             await interaction.followup.send("There are **no** pending requests at the moment.", ephemeral=True)
             return
+        
         lines = []
-        for user_id_str, request_data in pending_requests.items():
+        
+        # Iterate directly over the list of request dicts
+        for request_data in pending_requests:
+            user_id_str = request_data.get("user_id", "N/A")
             req_type = request_data.get("request_type", "N/A")
-            detail = ""
+            timestamp = request_data.get("timestamp", "Unknown")
+            
+            # Build out the 'details' portion based on request_type
             if req_type == "trainee_role":
-                detail = f"InGame Name: {request_data.get('ingame_name', 'Unknown')}, Region: {request_data.get('region', 'Not Selected')}"
+                detail = (
+                    f"InGame Name: {request_data.get('ingame_name', 'Unknown')}, "
+                    f"Region: {request_data.get('region', 'Not Selected')}"
+                )
             elif req_type == "name_change":
                 detail = f"New Name: {request_data.get('new_name', 'Unknown')}"
             elif req_type == "other":
                 detail = f"Request: {request_data.get('other', 'No details')}"
-            lines.append(f"• **User ID**: {user_id_str} | **Type**: `{req_type}` | {detail}")
+            else:
+                detail = "N/A"
+            
+            # Include the timestamp in the output line
+            lines.append(
+                f"• **User ID**: {user_id_str} | **Type**: `{req_type}` | {detail} | **Time**: {timestamp}"
+            )
+        
         reply_text = "\n".join(lines)
         await interaction.followup.send(f"**Current Pending Requests:**\n\n{reply_text}", ephemeral=True)
 
@@ -2214,6 +2398,7 @@ class RecruitmentCog(commands.Cog):
         embed.add_field(name="InGame Name",value=data["ingame_name"], inline=False)
         embed.add_field(name="User ID",    value=f"<@{data['user_id']}>", inline=False)
         embed.add_field(name="Region",     value=data['region'], inline=False)
+        embed.add_field(name="Reminder?",  value=data['reminder_sent'], inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="remove", description="Remove a user from trainee / cadet program and close thread!")
@@ -2581,6 +2766,7 @@ class RecruitmentCog(commands.Cog):
             return
 
         embed = discord.Embed(title="Application Info", color=discord.Color.blue())
+        embed.add_field(name="Thread_ID", value=f"<#{app_data['thread_id']}>", inline=False)
         embed.add_field(name="Applicant", value=f"<@{app_data['applicant_id']}>", inline=False)
         embed.add_field(
             name="Recruiter", 
@@ -2670,7 +2856,7 @@ class RecruitmentCog(commands.Cog):
         if not app_data.get("recruiter_id"):
             update_application_recruiter(str(interaction.channel.id), str(interaction.user.id))
             app_data["recruiter_id"] = str(interaction.user.id)
-            await interaction.followup.send("ℹ️ Application was unclaimed. It has now been claimed by you.", ephemeral=True)
+            await interaction.followup.send("ℹ️ Application was unclaimed. It has now been claimed by you. \n *Processing the command, please wait*", ephemeral=True)
 
         # Now do the "Trainee add" logic:
         applicant_id = int(app_data["applicant_id"])
@@ -2782,6 +2968,157 @@ class RecruitmentCog(commands.Cog):
         activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
         if activity_channel:
             embed = create_user_activity_log_embed("recruitment", f"Application Accepted", interaction.user, f"User has accepted this application. (Thread ID: <#{interaction.channel.id}>)")
+            await activity_channel.send(embed=embed)
+        try:
+            await interaction.channel.edit(locked=True, archived=True)
+        except discord.Forbidden:
+            pass
+
+    @app_commands.command(name="app_accept_cadet", description="Accept this application, and get the person to cadet immediatly.")
+    async def app_accept_cadet_command(self, interaction: discord.Interaction):
+        # Immediately defer so we can use followup responses
+        await interaction.response.defer(ephemeral=False)
+
+        # Use followup.send for error responses (ephemeral)
+        if not is_in_correct_guild(interaction):
+            await interaction.followup.send("❌ Wrong guild!", ephemeral=True)
+            return
+
+        # Must be used in a thread
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.followup.send("❌ Must be used in a thread!", ephemeral=True)
+            return
+
+        app_data = get_application(str(interaction.channel.id))
+        if not app_data:
+            await interaction.followup.send("❌ No application data found for this thread!", ephemeral=True)
+            return
+
+        if app_data["is_closed"] == 1:
+            await interaction.followup.send("❌ This application is already closed!", ephemeral=True)
+            return
+
+        # Check if the user issuing command is a Recruiter
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
+            return
+
+        # If the application is not claimed, automatically claim it:
+        if not app_data.get("recruiter_id"):
+            update_application_recruiter(str(interaction.channel.id), str(interaction.user.id))
+            app_data["recruiter_id"] = str(interaction.user.id)
+            await interaction.followup.send("ℹ️ Application was unclaimed. It has now been claimed by you. \n *Processing the command, please wait*", ephemeral=True)
+
+        # Now do the "Trainee add" logic:
+        applicant_id = int(app_data["applicant_id"])
+        if is_user_in_database(applicant_id):
+            await interaction.followup.send("❌ That user is already in the voting database!", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        member = guild.get_member(applicant_id)
+        if not member:
+            await interaction.followup.send("❌ That user is no longer in the guild!", ephemeral=True)
+            return
+
+        # 1) Adjust nickname to include [CADET]
+        await set_user_nickname(member, "cadet", app_data["ingame_name"])
+
+        # 2) Add the Cadet role
+        cadet_role_obj = guild.get_role(CADET_ROLE)
+        if cadet_role_obj:
+            try:
+                await member.add_roles(cadet_role_obj)
+            except discord.Forbidden:
+                await interaction.followup.send("❌ Bot lacks permission to assign the Cadet role.", ephemeral=True)
+                return
+        else:
+            await interaction.followup.send("❌ Cadet role not found.", ephemeral=True)
+            return
+
+        # 3) Add region role (EU, NA, SEA)
+        region = app_data["region"]
+        region_role_id = None
+        if region.upper() == "EU":
+            region_role_id = EU_ROLE_ID
+        elif region.upper() == "NA":
+            region_role_id = NA_ROLE_ID
+        elif region.upper() == "SEA":
+            region_role_id = SEA_ROLE_ID
+        if region_role_id:
+            region_role = guild.get_role(region_role_id)
+            if region_role:
+                try:
+                    await member.add_roles(region_role)
+                except discord.Forbidden:
+                    await interaction.followup.send("❌ Bot lacks permission to assign region role.", ephemeral=True)
+                    return
+
+        # 4) Create new thread in the Trainee Notes channel with a voting embed
+        notes_channel = guild.get_channel(CADET_NOTES_CHANNEL)
+        if not notes_channel:
+            await interaction.followup.send("❌ Cadet notes channel not found.", ephemeral=True)
+            return
+
+        start_time = get_rounded_time()
+        end_time   = start_time + timedelta(days=7)
+        thread_title = f"{app_data['ingame_name']} | CADET Notes"
+        try:
+            trainee_thread = await notes_channel.create_thread(
+                name=thread_title,
+                type=discord.ChannelType.public_thread,
+                invitable=False,
+                reason="New Cadet accepted"
+            )
+        except discord.Forbidden:
+            await interaction.followup.send("❌ Cannot create new thread in Cadet notes channel.", ephemeral=True)
+            return
+
+        # 5) Send the voting embed and add reactions
+        voting_embed = await create_voting_embed(start_time, end_time, app_data["recruiter_id"], region, app_data["ingame_name"])
+        msg = await trainee_thread.send(embed=voting_embed)
+        await msg.add_reaction(PLUS_ONE_EMOJI)
+        await msg.add_reaction("❔")
+        await msg.add_reaction(MINUS_ONE_EMOJI)
+
+        # 6) Insert into the "entries" table for tracking
+        inserted = add_entry(
+            thread_id=str(trainee_thread.id),
+            recruiter_id=app_data["recruiter_id"],
+            starttime=start_time,
+            endtime=end_time,
+            role_type="cadet",
+            embed_id=str(msg.id),
+            ingame_name=app_data["ingame_name"],
+            user_id=str(applicant_id),
+            region=region
+        )
+        if not inserted:
+            # Optionally log the DB insertion failure
+            pass
+
+        # 7) Post a welcome message in the trainee chat
+        swat_chat = guild.get_channel(SWAT_CHAT_CHANNEL)
+        if swat_chat:
+            message_text = random.choice(cadet_messages).replace("{username}", f"<@{applicant_id}>")
+            cadet_embed = discord.Embed(description=message_text, colour=0x008000)
+            await swat_chat.send(f"<@{applicant_id}>")
+            await swat_chat.send(embed=cadet_embed)
+
+        update_application_status(str(interaction.channel.id), 'accepted_cadet')
+        # Mark application as closed in your DB and lock/archive the application thread
+        close_application(str(interaction.channel.id))
+        acceptance_embed = discord.Embed(
+            title="✅ This application has been **ACCEPTED**!",
+            description=f"<@{applicant_id}> is now a Cadet.",
+            colour=0x00b050
+        )
+        acceptance_embed.set_footer(text="🔒 This thread is locked now.")
+        await interaction.followup.send(embed=acceptance_embed, ephemeral=False)
+        activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+        if activity_channel:
+            embed = create_user_activity_log_embed("recruitment", f"Application Accepted (Cadet)", interaction.user, f"User has accepted this application to Cadet. (Thread ID: <#{interaction.channel.id}>)")
             await activity_channel.send(embed=embed)
         try:
             await interaction.channel.edit(locked=True, archived=True)
