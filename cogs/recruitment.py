@@ -2555,69 +2555,71 @@ class RecruitmentCog(commands.Cog):
         await interaction.followup.send(embed=embed)
         activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
         if activity_channel:
-            embed = create_user_activity_log_embed("recruitment", f"Promotion", interaction.user, f"User has removed a trainee/cadet. (Thread ID: <#{interaction.channel.id}>)")
+            embed = create_user_activity_log_embed("recruitment", f"Removed Trainee/Cadet", interaction.user, f"User has removed a trainee/cadet. (Thread ID: <#{interaction.channel.id}>)")
             await activity_channel.send(embed=embed)
+            
 
-    @app_commands.command(name="rename", description="Rename the trainee (or cadet) thread and update the in‑game name.")
+    @app_commands.command(name="rename", description="Rename the trainee/cadet thread and update the in-game name in the voting embed.")
     async def rename(self, interaction: discord.Interaction, new_name: str):
-        # Ensure correct guild and that the command is used inside a thread.
+        # Check the command is used in the correct guild.
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
             return
+        # Make sure it's run inside a thread.
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.response.send_message("❌ This command must be used inside a thread.", ephemeral=True)
             return
-
-        # (Optional) Check that the thread's parent channel is one of your trainee/cadet notes channels.
+        # Ensure the thread is a trainee or cadet notes thread.
         if interaction.channel.parent_id not in [TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL]:
             await interaction.response.send_message("❌ This command can only be used in a trainee or cadet notes thread.", ephemeral=True)
             return
 
+        # Defer the response so we have extra time and avoid multiple responses.
+        await interaction.response.defer(ephemeral=False)
+
         thread_id = str(interaction.channel.id)
-        # Retrieve the current DB entry for this thread.
         app_entry = get_entry(thread_id)
         if not app_entry:
-            await interaction.response.send_message("❌ No application entry found for this thread.", ephemeral=True)
+            await interaction.followup.send("❌ No application entry found for this thread.", ephemeral=True)
             return
 
         # Update the in-game name in the database.
         if not update_application_ingame_name(thread_id, new_name):
-            await interaction.response.send_message("❌ Failed to update the name in the database.", ephemeral=True)
+            await interaction.followup.send("❌ Failed to update the application name in the database.", ephemeral=True)
             return
 
-        # Rename the thread.
-        # For example, if the role type is "trainee" then name the thread as "NewName - Trainee Application"
+        # Determine the role suffix based on the role type.
         role_suffix = "Trainee Application" if app_entry["role_type"] == "trainee" else "Cadet Notes"
         new_thread_name = f"{new_name} - {role_suffix}"
         try:
             await interaction.channel.edit(name=new_thread_name)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Failed to rename thread: {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ Failed to rename thread: {e}", ephemeral=True)
             return
 
-        # Update the embed if an embed_id exists.
+        # Regenerate the voting embed so the new name appears correctly.
+        # Use the stored start time, end time (or default to +7 days), recruiter (if claimed), and region.
+        start_time = app_entry["starttime"]
+        end_time = app_entry["endtime"] if app_entry["endtime"] else (start_time + timedelta(days=7))
+        recruiter = int(app_entry["recruiter_id"]) if app_entry["recruiter_id"] else 0
+        region = app_entry["region"]
+        try:
+            new_embed = await create_voting_embed(start_time, end_time, recruiter, region, new_name)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to generate new embed: {e}", ephemeral=True)
+            return
+
+        # Update the embed message if an embed_id is stored.
         if app_entry.get("embed_id"):
             try:
                 embed_msg = await interaction.channel.fetch_message(int(app_entry["embed_id"]))
-                if embed_msg.embeds:
-                    embed = embed_msg.embeds[0]
-                    # Look for a field named "InGame Name" or update the title.
-                    field_updated = False
-                    for i, field in enumerate(embed.fields):
-                        if field.name.lower() == "ingame name":
-                            embed.set_field_at(i, name="InGame Name", value=new_name, inline=field.inline)
-                            field_updated = True
-                            break
-                    if not field_updated:
-                        # Alternatively, add the field if not found.
-                        embed.add_field(name="InGame Name", value=new_name, inline=False)
-                    await embed_msg.edit(embed=embed)
-                else:
-                    log("No embed found to update.", level="warning")
+                await embed_msg.edit(embed=new_embed)
             except Exception as e:
-                await interaction.followup.send(f"⚠️ Warning: Failed to update the embed: {e}", ephemeral=True)
-        await interaction.response.send_message(f"✅ Trainee thread renamed to **{new_thread_name}** and database updated.", ephemeral=True)
+                await interaction.followup.send(f"⚠️ Warning: Failed to update the voting embed: {e}", ephemeral=True)
 
+        # Send a public confirmation message.
+        embed = discord.Embed(title=f"📇Ingame Name has been changed to *{new_name}*", colour=0xda65ba)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="promote", description="Promote the user in the current voting thread (Trainee->Cadet or Cadet->SWAT).")
     async def promote_user_command(self, interaction: discord.Interaction):

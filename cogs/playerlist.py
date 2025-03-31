@@ -191,7 +191,7 @@ class PlayerListCog(commands.Cog):
             embed.add_field(name="Server or API down?", value="No Data for this server!", inline=False)
             embed.add_field(name="🎮Players:", value="```no data```", inline=True)
             embed.add_field(name="⌛Queue:", value="```no data```", inline=True)
-            embed.set_footer(text="Refreshes every 30 seconds | Data is a rough estimate")
+            embed.set_footer(text="Refreshes every 60 seconds")
             embed.timestamp = datetime.now()
             return embed
         if matching_players is not None and not offline:
@@ -239,7 +239,7 @@ class PlayerListCog(commands.Cog):
             embed.add_field(name="Server or API down?", value="No Data for this server!", inline=False)
             embed.add_field(name="🎮Players:", value="```no data```", inline=True)
             embed.add_field(name="⌛Queue:", value="```no data```", inline=True)
-        embed.set_footer(text="Refreshes every 30 seconds | Data is a rough estimate")
+        embed.set_footer(text="Refreshes every 60 seconds")
         embed.timestamp = datetime.now()
         return embed
 

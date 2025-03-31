@@ -12,7 +12,7 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.AutoShardedBot(command_prefix="!", intents=intents)
 
 @bot.tree.command(name="reload_cog", description="Reload a specified cog. (Owner only)")
 async def reload_cog_command(interaction: discord.Interaction, cog_name: str):
@@ -49,6 +49,10 @@ async def reload_cog_command(interaction: discord.Interaction, cog_name: str):
             f"❌ Failed to reload `{cog_name}`:\n```\n{e}\n```",
             ephemeral=True
         )
+
+@bot.tree.command(name="shardinfo", description="Display the current shard ID.")
+async def shardinfo(interaction: discord.Interaction):
+    await interaction.response.send_message(f"This interaction is on shard {interaction.client.shard_id}.", ephemeral=True)
 
 
 @bot.event

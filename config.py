@@ -51,7 +51,7 @@ TOKEN_FILE = "token.txt"  # Make sure this file is gitignored!
 # -----------------------
 USE_LOCAL_JSON = False
 LOCAL_JSON_FILE = "json-formatting.json"
-CHECK_INTERVAL = 2         # in seconds
+CHECK_INTERVAL = 30         # in seconds
 CACHE_UPDATE_INTERVAL = 300  # in seconds
 
 API_URLS = {
