@@ -36,13 +36,15 @@ async def reload_cog_command(interaction: discord.Interaction, cog_name: str):
 
     # 3) Attempt to reload the cog
     try:
+        # Attempt to reload the cog.
         await interaction.client.reload_extension(cog_name)
+        # After reloading, resync the command tree.
+        synced = await interaction.client.tree.sync()
         await interaction.response.send_message(
-            f"✅ Successfully reloaded `{cog_name}`",
+            f"✅ Successfully reloaded `{cog_name}` and resynced commands ({len(synced)} commands synced).",
             ephemeral=True
         )
     except Exception as e:
-        # 4) If reload fails, send an ephemeral error
         await interaction.response.send_message(
             f"❌ Failed to reload `{cog_name}`:\n```\n{e}\n```",
             ephemeral=True

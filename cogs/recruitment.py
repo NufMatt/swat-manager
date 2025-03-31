@@ -175,6 +175,26 @@ def is_user_in_database(user_id: int) -> bool:
         if conn:
             conn.close()
 
+def update_application_ingame_name(thread_id: str, new_name: str) -> bool:
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE entries SET ingame_name = ? WHERE thread_id = ?",
+            (new_name, thread_id)
+        )
+        conn.commit()
+        updated = cursor.rowcount > 0
+        if updated:
+            log(f"Updated ingame_name for thread {thread_id} to {new_name}")
+        return updated
+    except sqlite3.Error as e:
+        log(f"DB Error (update_application_ingame_name): {e}", level="error")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
 # -------------------------------
 # Role Requests
 # -------------------------------
@@ -759,6 +779,42 @@ def get_open_application(user_id: str) -> Optional[Dict]:
     finally:
         if conn:
             conn.close()
+
+def get_open_applications() -> list:
+    applications = []
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT thread_id, applicant_id, recruiter_id, ingame_name, region, ban_history_sent, starttime FROM application_threads WHERE is_closed = 0 AND status = 'open'"
+        )
+        rows = cursor.fetchall()
+        for row in rows:
+            applications.append({
+                "thread_id": row[0],
+                "applicant_id": row[1],
+                "recruiter_id": row[2],
+                "ingame_name": row[3],
+                "region": row[4],
+                "ban_history_sent": int(row[5]),
+                "starttime": row[6]
+            })
+    except sqlite3.Error as e:
+        log(f"DB Error (get_open_applications): {e}", level="error")
+    finally:
+        if conn:
+            conn.close()
+    return applications
+
+def sort_applications(apps: list) -> list:
+    def sort_key(app):
+        # For unclaimed, assign 0 if ban_history_sent is 0, 1 if ban_history_sent is 1.
+        # For claimed applications (recruiter_id exists), assign 2.
+        if app["recruiter_id"]:
+            return (2, 0)
+        else:
+            return (0, app["ban_history_sent"])
+    return sorted(apps, key=sort_key)
 
 # -------------------------------
 # APPLICATION ATTEMPTS DATABASE FUNCTIONS
@@ -2358,6 +2414,47 @@ class RecruitmentCog(commands.Cog):
         reply_text = "\n".join(lines)
         await interaction.followup.send(f"**Current Pending Requests:**\n\n{reply_text}", ephemeral=True)
 
+    @app_commands.command(name="list_applications", description="List all current open applications with their status.")
+    async def list_applications(self, interaction: discord.Interaction):
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
+
+        # (Optional) Restrict this command to recruiters or leadership.
+        guild = interaction.client.get_guild(GUILD_ID)
+        recruiter_role = guild.get_role(RECRUITER_ID) if guild else None
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ You do not have permission to list applications.", ephemeral=True)
+            return
+
+        apps = get_open_applications()
+        if not apps:
+            await interaction.response.send_message("There are no open applications at the moment.", ephemeral=True)
+            return
+
+        sorted_apps = sort_applications(apps)
+        description_lines = []
+        for app in sorted_apps:
+            if not app["recruiter_id"]:
+                if app["ban_history_sent"] == 0:
+                    status = "Unclaimed, No Ban History"
+                else:
+                    status = "Unclaimed, Ban History Sent"
+            else:
+                status = "Claimed"
+            # You can also include a formatted timestamp if desired.
+            description_lines.append(
+                f"**{app['ingame_name']}** (Thread: `{app['thread_id']}`) | Region: {app['region']} | Status: {status}"
+            )
+        description = "\n".join(description_lines)
+        embed = discord.Embed(
+            title="📋 Open Applications",
+            description=description,
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
     @app_commands.command(name="clear_requests", description="Clears the entire pending requests list.")
     async def clear_requests(self, interaction: discord.Interaction):
         if not is_in_correct_guild(interaction):
@@ -2460,6 +2557,67 @@ class RecruitmentCog(commands.Cog):
         if activity_channel:
             embed = create_user_activity_log_embed("recruitment", f"Promotion", interaction.user, f"User has removed a trainee/cadet. (Thread ID: <#{interaction.channel.id}>)")
             await activity_channel.send(embed=embed)
+
+    @app_commands.command(name="rename", description="Rename the trainee (or cadet) thread and update the in‑game name.")
+    async def rename(self, interaction: discord.Interaction, new_name: str):
+        # Ensure correct guild and that the command is used inside a thread.
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("❌ This command must be used inside a thread.", ephemeral=True)
+            return
+
+        # (Optional) Check that the thread's parent channel is one of your trainee/cadet notes channels.
+        if interaction.channel.parent_id not in [TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL]:
+            await interaction.response.send_message("❌ This command can only be used in a trainee or cadet notes thread.", ephemeral=True)
+            return
+
+        thread_id = str(interaction.channel.id)
+        # Retrieve the current DB entry for this thread.
+        app_entry = get_entry(thread_id)
+        if not app_entry:
+            await interaction.response.send_message("❌ No application entry found for this thread.", ephemeral=True)
+            return
+
+        # Update the in-game name in the database.
+        if not update_application_ingame_name(thread_id, new_name):
+            await interaction.response.send_message("❌ Failed to update the name in the database.", ephemeral=True)
+            return
+
+        # Rename the thread.
+        # For example, if the role type is "trainee" then name the thread as "NewName - Trainee Application"
+        role_suffix = "Trainee Application" if app_entry["role_type"] == "trainee" else "Cadet Notes"
+        new_thread_name = f"{new_name} - {role_suffix}"
+        try:
+            await interaction.channel.edit(name=new_thread_name)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to rename thread: {e}", ephemeral=True)
+            return
+
+        # Update the embed if an embed_id exists.
+        if app_entry.get("embed_id"):
+            try:
+                embed_msg = await interaction.channel.fetch_message(int(app_entry["embed_id"]))
+                if embed_msg.embeds:
+                    embed = embed_msg.embeds[0]
+                    # Look for a field named "InGame Name" or update the title.
+                    field_updated = False
+                    for i, field in enumerate(embed.fields):
+                        if field.name.lower() == "ingame name":
+                            embed.set_field_at(i, name="InGame Name", value=new_name, inline=field.inline)
+                            field_updated = True
+                            break
+                    if not field_updated:
+                        # Alternatively, add the field if not found.
+                        embed.add_field(name="InGame Name", value=new_name, inline=False)
+                    await embed_msg.edit(embed=embed)
+                else:
+                    log("No embed found to update.", level="warning")
+            except Exception as e:
+                await interaction.followup.send(f"⚠️ Warning: Failed to update the embed: {e}", ephemeral=True)
+        await interaction.response.send_message(f"✅ Trainee thread renamed to **{new_thread_name}** and database updated.", ephemeral=True)
+
 
     @app_commands.command(name="promote", description="Promote the user in the current voting thread (Trainee->Cadet or Cadet->SWAT).")
     async def promote_user_command(self, interaction: discord.Interaction):
