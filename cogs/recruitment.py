@@ -18,7 +18,8 @@ from config_testing import (
     RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID,
     TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE,
     PLUS_ONE_EMOJI, MINUS_ONE_EMOJI, LEAD_BOT_DEVELOPER_ID, LEAD_BOT_DEVELOPER_EMOJI,
-    INTEGRATIONS_MANAGER, RECRUITER_EMOJI, LEADERSHIP_EMOJI, APPLICATION_EMBED_ID_FILE, APPLY_CHANNEL_ID, ACTIVITY_CHANNEL_ID
+    INTEGRATIONS_MANAGER, RECRUITER_EMOJI, LEADERSHIP_EMOJI, APPLICATION_EMBED_ID_FILE, APPLY_CHANNEL_ID, ACTIVITY_CHANNEL_ID,
+    TIMEOUT_ROLE_ID, BLACKLISTED_ROLE_ID
 )
 from messages import trainee_messages, cadet_messages, welcome_to_swat, OPEN_TICKET_EMBED_TEXT
 from cogs.helpers import *
@@ -1001,6 +1002,106 @@ def update_region_status(region: str, status: str) -> bool:
         conn.close()
 
 # -------------------------------
+# Timeouts/Blacklists Database Functions
+# -------------------------------
+
+def init_timeouts_db():
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS timeouts (
+                user_id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,  -- "timeout" or "blacklist"
+                expires_at TEXT     -- ISO timestamp for timeout; NULL for blacklist
+            )
+            """
+        )
+        conn.commit()
+        log("Timeouts/Blacklists DB initialized successfully.")
+    except sqlite3.Error as e:
+        log(f"Timeouts DB Error: {e}", level="error")
+    finally:
+        conn.close()
+
+init_timeouts_db()
+
+
+def add_timeout_record(user_id: str, record_type: str, expires_at: Optional[datetime] = None) -> bool:
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO timeouts (user_id, type, expires_at) VALUES (?, ?, ?)",
+            (user_id, record_type, expires_at.isoformat() if expires_at else None)
+        )
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        log(f"DB Error (add_timeout_record): {e}", level="error")
+        return False
+    finally:
+        conn.close()
+
+
+def remove_timeout_record(user_id: str) -> bool:
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM timeouts WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        log(f"DB Error (remove_timeout_record): {e}", level="error")
+        return False
+    finally:
+        conn.close()
+
+
+def get_timeout_record(user_id: str) -> Optional[Dict]:
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, type, expires_at FROM timeouts WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            return {
+                "user_id": row[0],
+                "type": row[1],
+                "expires_at": datetime.fromisoformat(row[2]) if row[2] else None
+            }
+        return None
+    except sqlite3.Error as e:
+        log(f"DB Error (get_timeout_record): {e}", level="error")
+        return None
+    finally:
+        conn.close()
+
+
+def get_all_timeouts() -> list:
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id, type, expires_at FROM timeouts")
+        rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            result.append({
+                "user_id": row[0],
+                "type": row[1],
+                "expires_at": datetime.fromisoformat(row[2]) if row[2] else None
+            })
+        return result
+    except sqlite3.Error as e:
+        log(f"DB Error (get_all_timeouts): {e}", level="error")
+        return []
+    finally:
+        conn.close()
+
+
+
+# -------------------------------
 # Helper functions
 # -------------------------------
 
@@ -1321,6 +1422,13 @@ class ApplicationView(discord.ui.View):
         if any(r.id in [TRAINEE_ROLE, CADET_ROLE] for r in interaction.user.roles):
             await interaction.response.send_message("❌ You already have a trainee/cadet role!", ephemeral=True)
             return
+        if any(r.id == BLACKLISTED_ROLE_ID for r in interaction.user.roles):
+            await interaction.response.send_message("❌ You are blacklisted from applying for SWAT!", ephemeral=True)
+            return
+        if any(r.id == TIMEOUT_ROLE_ID for r in interaction.user.roles):
+            await interaction.response.send_message("❌ You are temporarily timed out from applying for SWAT!", ephemeral=True)
+            return
+        
         
         # Prompt the user to select their region first.
         await interaction.response.send_message(
@@ -2187,6 +2295,57 @@ class RecruitmentCog(commands.Cog):
                                 log(f"Error sending reminder in thread {thread_id}: {e}", level="error")
                     self.reminder_times[thread_id] = now
 
+    @tasks.loop(minutes=30)
+    async def check_timeouts_task(self):
+        now = datetime.now()
+        records = get_all_timeouts()
+        for record in records:
+            guild = self.bot.get_guild(GUILD_ID)
+            if not guild:
+                continue
+            try:
+                member = guild.get_member(int(record["user_id"]))
+            except Exception:
+                continue
+            if not member:
+                continue  # Member not in guild
+            if record["type"] == "timeout":
+                timeout_role = guild.get_role(TIMEOUT_ROLE_ID)
+                # If the timeout has expired
+                if record["expires_at"] and record["expires_at"] <= now:
+                    if timeout_role in member.roles:
+                        try:
+                            await member.remove_roles(timeout_role)
+                            log(f"Removed expired timeout role from user {record['user_id']}")
+                        except Exception as e:
+                            log(f"Error removing expired timeout role from user {record['user_id']}: {e}", level="error")
+                    remove_timeout_record(record["user_id"])
+                    # Log the expiration in the activity channel
+                    activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+                    if activity_channel:
+                        log_embed = create_user_activity_log_embed(
+                            "recruitment", "Timeout Expired", member,
+                            f"Timeout expired on {record['expires_at'].strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                        await activity_channel.send(embed=log_embed)
+                else:
+                    # Timeout still active – if role missing, re-add it.
+                    if timeout_role not in member.roles:
+                        try:
+                            await member.add_roles(timeout_role)
+                            log(f"Re-added timeout role to user {record['user_id']}")
+                        except Exception as e:
+                            log(f"Error re-adding timeout role to user {record['user_id']}: {e}", level="error")
+            elif record["type"] == "blacklist":
+                blacklist_role = guild.get_role(BLACKLISTED_ROLE_ID)
+                if blacklist_role not in member.roles:
+                    try:
+                        await member.add_roles(blacklist_role)
+                        log(f"Re-added blacklist role to user {record['user_id']}")
+                    except Exception as e:
+                        log(f"Error re-adding blacklist role to user {record['user_id']}: {e}", level="error")
+        log("Completed check_timeouts_task cycle.")
+
 
 
 
@@ -2499,7 +2658,8 @@ class RecruitmentCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="remove", description="Remove a user from trainee / cadet program and close thread!")
-    async def lock_thread_command(self, interaction: discord.Interaction):
+    async def lock_thread_command(self, interaction: discord.Interaction, days: int):
+
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
             return
@@ -2547,12 +2707,49 @@ class RecruitmentCog(commands.Cog):
                 await interaction.followup.send(f"❌ HTTP Error removing roles: {e}", ephemeral=True)
         else:
             log(f"Member with ID {data['user_id']} not found in guild (they may have left). Skipping nickname and role removal.", level="warning")
+        
+        # --- New Blacklist/Timeout Logic for /remove ---
+        guild = interaction.guild
+        member = guild.get_member(int(data["user_id"])) if guild else None
+        now = datetime.now()
+        reapply_info = ""
+        if member:
+            if days == -1:
+                reapply_info = "No additional restrictions."
+            elif days == 0:
+                add_timeout_record(str(member.id), "blacklist")
+                blacklist_role = guild.get_role(BLACKLISTED_ROLE_ID)
+                if blacklist_role and blacklist_role not in member.roles:
+                    try:
+                        await member.add_roles(blacklist_role)
+                    except Exception as e:
+                        log(f"Error assigning blacklist role to {member.id}: {e}", level="error")
+                log(f"User {member.id} has been blacklisted.")
+                create_user_activity_log_embed("recruitment", "Blacklisted User", member, f"User has been blacklisted. (Thread ID: <#{interaction.channel.id}>)")
+                reapply_info = "User has been blacklisted."
+            elif days >= 1:
+                expires = now + timedelta(days=days)
+                add_timeout_record(str(member.id), "timeout", expires)
+                timeout_role = guild.get_role(TIMEOUT_ROLE_ID)
+                if timeout_role and timeout_role not in member.roles:
+                    try:
+                        await member.add_roles(timeout_role)
+                    except Exception as e:
+                        log(f"Error assigning timeout role to {member.id}: {e}", level="error")
+                log(f"User {member.id} has been timed out until {expires}.")
+                create_user_activity_log_embed("recruitment", "Timed Out User", member, f"User has been timed out until {expires}. (Thread ID: <#{interaction.channel.id}>)")
+                reapply_info = f"User is timed out from applications until {expires.strftime('%Y-%m-%d %H:%M:%S')}."
+        # --- End Timeout/Blacklist Logic ---
+
         embed = discord.Embed(
             title="❌ " + str(data["ingame_name"]) + " has been removed!",
             colour=0xf94144
         )
+        if reapply_info:
+            embed.add_field(name="Status", value=reapply_info, inline=False)
         embed.set_footer(text="🔒This thread is locked now!")
         await interaction.followup.send(embed=embed)
+
         activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
         if activity_channel:
             embed = create_user_activity_log_embed("recruitment", f"Removed Trainee/Cadet", interaction.user, f"User has removed a trainee/cadet. (Thread ID: <#{interaction.channel.id}>)")
@@ -2946,7 +3143,7 @@ class RecruitmentCog(commands.Cog):
 
 
     @app_commands.command(name="app_remove", description="Remove this application and lock/archive the thread.")
-    async def app_remove_command(self, interaction: discord.Interaction):
+    async def app_remove_command(self, interaction: discord.Interaction, days: int):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ Wrong guild!", ephemeral=True)
             return
@@ -2954,11 +3151,42 @@ class RecruitmentCog(commands.Cog):
             await interaction.response.send_message("❌ Must be used in a thread!", ephemeral=True)
             return
 
+        app_data = get_application(str(interaction.channel.id))
         # Instead of deleting, mark the application as removed.
         removed = mark_application_removed(str(interaction.channel.id))
         if not removed:
             await interaction.response.send_message("❌ No application data found or already removed!", ephemeral=True)
             return
+
+                # --- New Blacklist/Timeout Logic for /remove ---
+        # Get the guild and member for the applicant (stored in data["user_id"])
+        guild = interaction.guild
+        member = guild.get_member(int(app_data["user_id"])) if guild else None
+        now = datetime.now()
+        if member:
+            if days == -1:
+                # Only remove the application; no blacklist/timeout is added.
+                pass
+            elif days == 0:
+                # Add a blacklist record and assign the blacklist role.
+                add_timeout_record(str(member.id), "blacklist")
+                blacklist_role = guild.get_role(BLACKLISTED_ROLE_ID)
+                if blacklist_role and blacklist_role not in member.roles:
+                    try:
+                        await member.add_roles(blacklist_role)
+                    except Exception as e:
+                        log(f"Error assigning blacklist role to {member.id}: {e}", level="error")
+            elif days >= 1:
+                # Add a timeout record with an expiration time.
+                expires = now + timedelta(days=days)
+                add_timeout_record(str(member.id), "timeout", expires)
+                timeout_role = guild.get_role(TIMEOUT_ROLE_ID)
+                if timeout_role and timeout_role not in member.roles:
+                    try:
+                        await member.add_roles(timeout_role)
+                    except Exception as e:
+                        log(f"Error assigning timeout role to {member.id}: {e}", level="error")
+
 
         embed = discord.Embed(
             title="❌ This application has been removed!",
@@ -3125,6 +3353,16 @@ class RecruitmentCog(commands.Cog):
         )
         acceptance_embed.set_footer(text="🔒 This thread is locked now.")
         await interaction.followup.send(embed=acceptance_embed, ephemeral=False)
+        
+        dm_embed = discord.Embed(title=":white_check_mark: Your application as a S.W.A.T Trainee has been accepted!", description=":tada: Congratulations!\nYou’ve automatically received your Trainee role — the first step is complete!\n\n:pushpin: All additional information can be found in the #「:pushpin:」trainee-info channel.\nPlease make sure to carefully read through everything to get started on the right foot.\n\nWelcome aboard, and good luck on your journey!", colour=0x00c600)
+        # Send a DM to the applicant
+        try:
+            await member.send(embed=dm_embed)
+        except discord.Forbidden:
+            log(f"Could not DM user {member.id} (Forbidden).", level="warning")
+        except discord.HTTPException as e:
+            log(f"HTTP error DMing user {member.id}: {e}", level="warning")   
+        
         activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
         if activity_channel:
             embed = create_user_activity_log_embed("recruitment", f"Application Accepted", interaction.user, f"User has accepted this application. (Thread ID: <#{interaction.channel.id}>)")
@@ -3284,10 +3522,10 @@ class RecruitmentCog(commands.Cog):
             await interaction.channel.edit(locked=True, archived=True)
         except discord.Forbidden:
             pass
-
     @app_commands.command(name="app_deny", description="Deny the application with a reason and a note about reapplying.")
-    @app_commands.describe(reason="Why is this application being denied?", can_reapply="Indicate if they can reapply later (e.g., 'Yes after 2 weeks').")
-    async def app_deny_command(self, interaction: discord.Interaction, reason: str, can_reapply: str):
+    @app_commands.describe(reason="Why is this application being denied?",
+                        can_reapply="Enter -1 for no timeout, 0 for blacklist, or number of days for timeout.")
+    async def app_deny_command(self, interaction: discord.Interaction, reason: str, can_reapply: int):
         await interaction.response.defer(ephemeral=False)
         if not is_in_correct_guild(interaction):
             await interaction.followup.send("❌ Wrong guild!", ephemeral=True)
@@ -3303,49 +3541,80 @@ class RecruitmentCog(commands.Cog):
             await interaction.followup.send("❌ This application is already closed!", ephemeral=True)
             return
 
-        # Mark the application as closed.
+        # --- Timeout/Blacklist Logic ---
+        guild = interaction.guild
+        member = guild.get_member(int(app_data["applicant_id"])) if guild else None
+        now = datetime.now()
+        reapply_info = "No timeout/blacklist applied."
+        if member:
+            if can_reapply == -1:
+                # Do nothing extra.
+                reapply_info = "No additional restrictions."
+            elif can_reapply == 0:
+                add_timeout_record(str(member.id), "blacklist")
+                blacklist_role = guild.get_role(BLACKLISTED_ROLE_ID)
+                if blacklist_role and blacklist_role not in member.roles:
+                    try:
+                        await member.add_roles(blacklist_role)
+                    except Exception as e:
+                        log(f"Error assigning blacklist role to {member.id}: {e}", level="error")
+                reapply_info = "User has been blacklisted."
+                log(f"User {member.id} has been blacklisted.", level="info")
+                create_user_activity_log_embed("recruitment", f"Blacklist User", interaction.user, f"User has blacklisted <@{member.id}>")
+            elif can_reapply >= 1:
+                expires = now + timedelta(days=can_reapply)
+                add_timeout_record(str(member.id), "timeout", expires)
+                timeout_role = guild.get_role(TIMEOUT_ROLE_ID)
+                if timeout_role and timeout_role not in member.roles:
+                    try:
+                        await member.add_roles(timeout_role)
+                    except Exception as e:
+                        log(f"Error assigning timeout role to {member.id}: {e}", level="error")
+                log(f"User {member.id} has been timed out until {expires}.", level="info")
+                create_user_activity_log_embed("recruitment", f"Timeout User", interaction.user, f"User has timed out <@{member.id}> until {expires}")
+                reapply_info = f"User can reapply on {expires.strftime('%Y-%m-%d %H:%M:%S')}."
+        # --- End Timeout/Blacklist Logic ---
+
+        # Mark the application as closed and update status
         close_application(str(interaction.channel.id))
-        # Update the status to 'denied'
         update_application_status(str(interaction.channel.id), 'denied')
-        # Check if the user is allowed to deny (e.g., recruiter role)
-        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
-        if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.followup.send("❌ You do not have permission to deny applications.", ephemeral=True)
-            return
 
-        # Mark the application as closed
-        close_application(str(interaction.channel.id))
-
-        # DM the applicant about the denial
+        # Send DM embed to the applicant
         applicant_id = int(app_data["applicant_id"])
         applicant_user = interaction.client.get_user(applicant_id)
-        if applicant_user:
-            try:
-                await applicant_user.send(
-                    f"Your application to join S.W.A.T. has been **denied**.\n\n"
-                    f"**Reason:** {reason}\n"
-                    f"**Can reapply?:** {can_reapply}\n\n"
-                    f"Thank you for your interest."
-                )
-            except discord.Forbidden:
-                pass  # user may have DMs disabled
+        dm_embed = discord.Embed(title="❌ Your application as a S.W.A.T Trainee has been denied.", colour=0xd00000)
+        if can_reapply == -1:
+            dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are free to reapply immediatly. Please ensure any issues mentioned above are addressed before reapplying.\n\nThank you for your interest!", inline=False)
+        elif can_reapply == 0:
+            dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou have been blacklisted from applying for SWAT. Please contact the recruiters via a ticket to appeal.\n\nThank you for your interest!", inline=False)
+        elif can_reapply >= 1:
+            dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are restricted from applying for {can_reapply} days. You can reapply on {expires.strftime('%Y-%m-%d %H:%M:%S')}.\n\nThank you for your interest!", inline=False)
 
-        # Lock/archive the thread with a public denial embed
+        try:
+            await applicant_user.send(embed=dm_embed)
+        except discord.Forbidden:
+            pass
+
+        # Send thread embed for denial
         denied_embed = discord.Embed(
-            title="❌ This application has been **DENIED**",
-            description=f"**Reason:** {reason}\n**Can reapply?:** {can_reapply}",
-            colour=0xff0000
+            title="❌ Application Denied",
+            description=f"**Reason:** {reason}\n**Reapply Info:** {reapply_info}",
+            color=discord.Color.red()
         )
         denied_embed.set_footer(text="🔒 This thread is locked now!")
         await interaction.followup.send(embed=denied_embed, ephemeral=False)
+
+        # Log activity
         activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
         if activity_channel:
-            embed = create_user_activity_log_embed("recruitment", f"Application Denied", interaction.user, f"User has denied this application. (Thread ID: <#{interaction.channel.id}>)")
-            await activity_channel.send(embed=embed)
+            log_embed = create_user_activity_log_embed("recruitment", "Application Denied", interaction.user,
+                                                    f"Application denied for thread ID: <#{interaction.channel.id}>")
+            await activity_channel.send(embed=log_embed)
         try:
             await interaction.channel.edit(locked=True, archived=True)
         except discord.Forbidden:
             pass
+
 
     @app_commands.command(name="app_claim", description="Claim this application.")
     async def app_claim_command(self, interaction: discord.Interaction):
@@ -3369,6 +3638,74 @@ class RecruitmentCog(commands.Cog):
             )
         else:
             await interaction.response.send_message("❌ Failed to update recruiter in DB!", ephemeral=True)
+
+
+    @app_commands.command(name="blacklist", description="Manually blacklist a user by their USERID.")
+    async def blacklist_command(self, interaction: discord.Interaction, user_id: str):
+        # (Optional) Check for proper permissions (e.g. leadership role)
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("Guild not found.", ephemeral=True)
+            return
+        member = guild.get_member(int(user_id))
+        if not member:
+            await interaction.response.send_message("User not found in the guild.", ephemeral=True)
+            return
+        add_timeout_record(user_id, "blacklist")
+        blacklist_role = guild.get_role(BLACKLISTED_ROLE_ID)
+        if blacklist_role and blacklist_role not in member.roles:
+            try:
+                await member.add_roles(blacklist_role)
+            except Exception as e:
+                log(f"Error assigning blacklist role to {user_id}: {e}", level="error")
+        log(f"User {user_id} has been blacklisted.", level="info")
+        create_user_activity_log_embed("recruitment", f"Blacklist User", interaction.user, f"User has blacklisted <@{user_id}>")
+        await interaction.response.send_message(f"User <@{user_id}> has been blacklisted.", ephemeral=True)
+    
+    @app_commands.command(name="show_blacklists", description="Lists all active blacklists and timeouts.")
+    async def show_blacklists(self, interaction: discord.Interaction):
+        records = get_all_timeouts()
+        if not records:
+            await interaction.response.send_message("No active blacklists or timeouts.", ephemeral=True)
+            return
+        lines = []
+        for rec in records:
+            if rec["type"] == "timeout":
+                exp_text = rec["expires_at"].strftime("%Y-%m-%d %H:%M") if rec["expires_at"] else "N/A"
+                lines.append(f"User ID: {rec['user_id']} | Timeout until: {exp_text}")
+            else:
+                lines.append(f"User ID: {rec['user_id']} | Blacklisted")
+        reply = "\n".join(lines)
+        await interaction.response.send_message(f"**Active Blacklists/Timeouts:**\n{reply}", ephemeral=True)
+
+    @app_commands.command(name="remove_timeout", description="Removes the blacklist/timeout from a user by their USERID.")
+    async def remove_timeout_command(self, interaction: discord.Interaction, user_id: str):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("Guild not found.", ephemeral=True)
+            return
+        member = guild.get_member(int(user_id))
+        if not member:
+            await interaction.response.send_message("User not found in the guild.", ephemeral=True)
+            return
+        removed = remove_timeout_record(user_id)
+        if removed:
+            # Remove roles if the member still has them.
+            timeout_role = guild.get_role(TIMEOUT_ROLE_ID)
+            blacklist_role = guild.get_role(BLACKLISTED_ROLE_ID)
+            try:
+                if timeout_role and timeout_role in member.roles:
+                    await member.remove_roles(timeout_role)
+                if blacklist_role and blacklist_role in member.roles:
+                    await member.remove_roles(blacklist_role)
+            except Exception as e:
+                log(f"Error removing roles from user {user_id}: {e}", level="error")
+            log(f"User {user_id} has been removed from blacklist/timeout.", level="info")
+            create_user_activity_log_embed("recruitment", f"Remove Timeout/Blacklist", interaction.user, f"User has removed timeout/blacklist from <@{user_id}>")
+            await interaction.response.send_message(f"Timeout/blacklist removed from user <@{user_id}>.", ephemeral=True)
+        else:
+            await interaction.response.send_message("No timeout/blacklist record found for that user.", ephemeral=True)
+
 
 #
 # Toggle Application Status Command
