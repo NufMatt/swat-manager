@@ -42,6 +42,10 @@ LEADERSHIP_EMOJI          = "<:leadership:1337037982930309224>"
 RECRUITER_EMOJI           = "<:recruiter:1337037961421656086>"
 LEAD_BOT_DEVELOPER_EMOJI  = "<:leaddeveloper:1337040174022131772>"
 INTEGRATIONS_MANAGER      = "<:integarationsmanager:1337040186986594367>"
+SWAT_LOGO_EMOJI           = "<:swat_logo:1356719341759889530>"
+TRAINEE_EMOJI             = "<:trainee:1356720724567654670>"
+CADET_EMOJI               = "<:cadet:1356720703784620183>"
+MENTOR_EMOJI              = "<:mentor:1356720745073610984>"
 
 # -----------------------
 # TICKETS

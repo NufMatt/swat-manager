@@ -1972,18 +1972,23 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
         embed = discord.Embed(
             title="📋 Application Overview",
             description=f"**Applicant:** <@{interaction.user.id}>",
-            color=0x0080c0
+            color=0x07ed13
         )
-        embed.add_field(name="🎮 In-Game Name", value=ign, inline=False)
-        embed.add_field(name="🔞 Age", value=age, inline=True)
-        embed.add_field(name="💪 Level", value=level, inline=True)
-        embed.add_field(name="❓ Why Join?", value=join_reason, inline=False)
-        embed.add_field(name="🚪 Previous Crews", value=previous_crews, inline=False)
-        # (No Ban History or Languages fields here)
+        embed.add_field(name="🎮 In-Game Name", value=f"```{ign}```", inline=False)
+        embed.add_field(name="🔞 Age", value=f"```{age}```", inline=True)
+        embed.add_field(name="💪 Level", value=f"```{level}```", inline=True)
+        embed.add_field(name="❓ Why Join?", value=f"```{join_reason}```", inline=False)
+        embed.add_field(name="🚪 Previous Crews", value=f"```{previous_crews}```", inline=True)
+        # Exclude the current application from history if needed
+        # (Assuming you have a way to identify the current application's record)
+        filtered_history = [entry for entry in history if entry.get("thread_id") != str(thread.id)]
+        has_history = len(filtered_history) > 0
+
         if has_history or recent_attempts:
             int_refs = ""
             if has_history:
-                int_refs += f"- Has History \n"
+                # Optionally, add details about previous applications
+                int_refs += f"- {len(filtered_history)} previous application(s)\n"
             for att in recent_attempts:
                 int_refs += f"- [Log Entry]({att['log_url']})\n"
             embed.add_field(
@@ -1994,8 +1999,10 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
         embed.add_field(
             name="⏳ Next Steps",
             value=(
-                "A recruiter will review your application soon and respond.\n"
-                "Next: **Provide any additional information if requested.**"
+                
+                "- Please provide your full ban history. You can request it by opening a ticket in the CnR Discord. Once you have it, post a screenshot in this thread.\n"
+                "- After that, a recruiter will review your application and let you know the decision."
+                "- If you have any questions, feel free to ask in this thread."
             ),
             inline=False
         )
@@ -3354,7 +3361,9 @@ class RecruitmentCog(commands.Cog):
         acceptance_embed.set_footer(text="🔒 This thread is locked now.")
         await interaction.followup.send(embed=acceptance_embed, ephemeral=False)
         
-        dm_embed = discord.Embed(title=":white_check_mark: Your application as a S.W.A.T Trainee has been accepted!", description=":tada: Congratulations!\nYou’ve automatically received your Trainee role — the first step is complete!\n\n:pushpin: All additional information can be found in the #「:pushpin:」trainee-info channel.\nPlease make sure to carefully read through everything to get started on the right foot.\n\nWelcome aboard, and good luck on your journey!", colour=0x00c600)
+        dm_embed = discord.Embed(title=":white_check_mark: Your application as a S.W.A.T Trainee has been accepted!", description=":tada: Congratulations!\nYou’ve automatically received your Trainee role — the first step is complete!\n\n:pushpin: All additional information can be found in the #「:pushpin:」trainee-info channel.\nPlease make sure to carefully read through everything to get started on the right foot.\n\nWelcome aboard, and good luck on your journey!\n\n", colour=0x00c600)
+        dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value="We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form](https://google.de)\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
+        
         # Send a DM to the applicant
         try:
             await member.send(embed=dm_embed)
@@ -3584,11 +3593,13 @@ class RecruitmentCog(commands.Cog):
         applicant_user = interaction.client.get_user(applicant_id)
         dm_embed = discord.Embed(title="❌ Your application as a S.W.A.T Trainee has been denied.", colour=0xd00000)
         if can_reapply == -1:
-            dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are free to reapply immediatly. Please ensure any issues mentioned above are addressed before reapplying.\n\nThank you for your interest!", inline=False)
+            dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are free to reapply immediatly. Please ensure any issues mentioned above are addressed before reapplying.\n\nThank you for your interest!\n\n", inline=False)
         elif can_reapply == 0:
-            dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou have been blacklisted from applying for SWAT. Please contact the recruiters via a ticket to appeal.\n\nThank you for your interest!", inline=False)
+            dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou have been blacklisted from applying for SWAT. Please contact the recruiters via a ticket to appeal.\n\nThank you for your interest!\n\n", inline=False)
         elif can_reapply >= 1:
-            dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are restricted from applying for {can_reapply} days. You can reapply on {expires.strftime('%Y-%m-%d %H:%M:%S')}.\n\nThank you for your interest!", inline=False)
+            dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are restricted from applying for {can_reapply} days. You can reapply on {expires.strftime('%Y-%m-%d %H:%M:%S')}.\n\nThank you for your interest!\n\n", inline=False)
+        
+        dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value="We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form](https://google.de)\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
 
         try:
             await applicant_user.send(embed=dm_embed)
