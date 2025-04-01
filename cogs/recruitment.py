@@ -21,7 +21,7 @@ from config_testing import (
     INTEGRATIONS_MANAGER, RECRUITER_EMOJI, LEADERSHIP_EMOJI, APPLICATION_EMBED_ID_FILE, APPLY_CHANNEL_ID, ACTIVITY_CHANNEL_ID,
     TIMEOUT_ROLE_ID, BLACKLISTED_ROLE_ID
 )
-from messages import trainee_messages, cadet_messages, welcome_to_swat, OPEN_TICKET_EMBED_TEXT
+from messages import trainee_messages, cadet_messages, welcome_to_swat, OPEN_TICKET_EMBED_TEXT, RECRUITMENT_MESSAGE, ROLE_REQUEST_MESSAGE
 from cogs.helpers import *
 
 # -------------------------------
@@ -1118,17 +1118,7 @@ def create_discord_timestamp(dt_obj: datetime) -> str:
 def create_embed() -> discord.Embed:
     embed = discord.Embed(
         title="**Welcome to the SWAT Community!** 🎉🚔",
-        description=(
-            "📌 **Select the appropriate button below:**\n\n"
-            "🔹 **Request Trainee Role** – If you applied through the website and got accepted **and received a DM from a recruiter**, press this button! "
-            "Fill in your **EXACT** in-game name, select the region you play in, and choose the recruiter who accepted you. "
-            "If everything checks out, you’ll receive a message in the trainee chat!\n\n"
-            "🔹 **Request Name Change** – Need to update your name? Press this button and enter your new name **without any SWAT tags!** "
-            "🚨 **Make sure your IGN and Discord name match at all times!** If they don’t, request a name change here!\n\n"
-            "🔹 **Request Other** – Want another role? Click here and type your request! We’ll handle the rest.\n\n"
-            "⚠️ **Important:** Follow the instructions carefully to avoid delays. Let’s get you set up and ready to roll! 🚀"
-        ),
-        colour=0x008040
+        description=ROLE_REQUEST_MESSAGE, colour=0x008040
     )
     return embed
 
@@ -1148,16 +1138,7 @@ def create_application_embed() -> discord.Embed:
     
     embed = discord.Embed(
         title="🚨 S.W.A.T. Recruitment - Application Requirements 🚨",
-        description=(
-            "Are you interested in joining **S.W.A.T.**? Make sure you meet the following requirements before applying:\n\n"
-            "🔸 **Level 20+**\n"
-            "🟢 **16+ years old**\n"
-            "🎤 **Working mic & speak English**\n"
-            "🎯 **Enjoy activities and events**\n\n"
-            "If you wish to submit a **Trainee Application**, please note that **you must first provide your ban history**. "
-            "A recruiter will review your application shortly after submission. 🚔\n\n"
-        ),
-        color=discord.Color.blue()
+        description=RECRUITMENT_MESSAGE, color=discord.Color.blue()
     )
 
     embed.add_field(name="🇪🇺 **EU**", value=f"```{eu_status}```", inline=True)
