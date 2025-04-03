@@ -151,3 +151,42 @@ Need help? Choose the right department for your request:
 📌 Click a button below to open a private thread with the right team!
 
 """
+
+RECRUITMENT_MESSAGE = """
+**Interested in joining S.W.A.T.?** Make sure you meet the requirements before applying:
+
+🔸 **Level 20+**
+🟢 **16+ years old**
+🎤 **Working mic & English speaker**
+🎯 **Active in events & activities**
+
+To apply, you’ll need to fill out a form with:
+• **Ingame Name** (no former crewtags)
+• **Age**
+• **Ingame Level**
+• **Past Crews**
+• **Why you want to join**
+
+🛑 **Lying will result in blacklist or removal from the process.**
+
+You must also provide your **ban history**. To speed this up:
+1. Open a ticket in the **CnR Discord**
+2. Ask for your full ban history
+3. **Take a screenshot and attach it to your application**
+
+🚫 False info or missing ban history = instant removal.
+
+✅ A recruiter will review your application shortly after submission. Good luck! 🚔
+"""
+
+
+ROLE_REQUEST_MESSAGE = """
+📌 **Select the appropriate button below:**
+
+🔹 **Request Name Change** – Need to update your name? Press this button and enter your new name **without any SWAT tags!**
+    🚨 **Make sure your IGN and Discord name match at all times!** If they don’t, request a name change here!
+
+🔹 **Request Other** – Want another role? Click here and type your request! We’ll handle the rest.
+
+⚠️ **Important:** Follow the instructions carefully to avoid delays. Let’s get you set up and ready to roll! 🚀
+"""

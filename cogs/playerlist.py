@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 from config_testing import (
     USE_LOCAL_JSON, LOCAL_JSON_FILE, CHECK_INTERVAL, CACHE_UPDATE_INTERVAL,
     API_URLS, API_URLS_FIVEM, STATUS_CHANNEL_ID, GUILD_ID, MENTOR_ROLE_ID,
-    CADET_ROLE, TRAINEE_ROLE, SWAT_ROLE_ID, RANK_HIERARCHY, ROLE_TO_RANK, EMBEDS_FILE, LEADERSHIP_ID, LEADERSHIP_EMOJI
+    CADET_ROLE, TRAINEE_ROLE, SWAT_ROLE_ID, RANK_HIERARCHY, ROLE_TO_RANK, EMBEDS_FILE, LEADERSHIP_ID, LEADERSHIP_EMOJI,
+    SWAT_LOGO_EMOJI, MENTOR_EMOJI, TRAINEE_EMOJI, CADET_EMOJI
 )
 from cogs.helpers import log, set_stored_embed, get_stored_embed
 
@@ -183,9 +184,6 @@ class PlayerListCog(commands.Cog):
         flags = {"EU": "🇪🇺 ", "NA": "🇺🇸 ", "SEA": "🇸🇬 "}
         region_name = region[:-1] if region[-1].isdigit() else region
         title = f"{flags.get(region_name, '')}{region}"
-        def safe_emoji(eid, default="⚫"):
-            e = self.bot.get_emoji(eid)
-            return str(e if e else default)
         embed = discord.Embed(title=title, colour=embed_color)
         if offline:
             embed.add_field(name="Server or API down?", value="No Data for this server!", inline=False)
@@ -208,7 +206,7 @@ class PlayerListCog(commands.Cog):
                 for mp in matching_players:
                     if mp["type"] == "mentor":
                         val += f"\n - {mp['username']} (<@{mp['discord_id']}>)" if mp['discord_id'] else f"\n - {mp['username']} (❔)"
-                embed.add_field(name=f"{safe_emoji(1305249069463113818)}Mentors Online:", value=val, inline=False)
+                embed.add_field(name=f"{MENTOR_EMOJI}Mentors Online:", value=val, inline=False)
             if swat_count - mentor_count > 0:
                 val = ""
                 for mp in matching_players:
@@ -219,20 +217,20 @@ class PlayerListCog(commands.Cog):
                 val = ""
                 for mp in matching_players:
                     if mp["type"] == "trainee":
-                        val += f"\n{safe_emoji(1305496951642390579)} {mp['username']} (<@{mp['discord_id']}>)"
+                        val += f"\n{TRAINEE_EMOJI} {mp['username']} (<@{mp['discord_id']}>)"
                     elif mp["type"] == "cadet":
-                        val += f"\n{safe_emoji(1305496985582698607)} {mp['username']} (<@{mp['discord_id']}>)"
+                        val += f"\n{CADET_EMOJI} {mp['username']} (<@{mp['discord_id']}>)"
                 embed.add_field(name="Cadets / Trainees Online:", value=val, inline=False)
             if all(p["type"] not in ("SWAT", "mentor", "trainee", "cadet", "unknown") for p in matching_players):
                 embed.add_field(name="\n*Nobody is online*\n", value="", inline=False)
             if queue_data and region in queue_data:
                 p = queue_data[region]
-                embed.add_field(name=f"{safe_emoji(1196404423874854992)}SWAT:", value=f"``` {swat_count} ```", inline=True)
+                embed.add_field(name=f"{SWAT_LOGO_EMOJI}SWAT:", value=f"``` {swat_count} ```", inline=True)
                 embed.add_field(name="🎮Players:", value=f"```{p['Players']}/{p['MaxPlayers']}```", inline=True)
                 embed.add_field(name="⌛Queue:", value=f"```{p['QueuedPlayers']}```", inline=True)
                 embed.add_field(name="", value=restart_timer, inline=False)
             else:
-                embed.add_field(name=f"{safe_emoji(1196404423874854992)}SWAT:", value=f"```{swat_count}```", inline=True)
+                embed.add_field(name=f"{SWAT_LOGO_EMOJI}SWAT:", value=f"```{swat_count}```", inline=True)
                 embed.add_field(name="🎮Players:", value="```no data```", inline=True)
                 embed.add_field(name="⌛Queue:", value="```no data```", inline=True)
         else:
