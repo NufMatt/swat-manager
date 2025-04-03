@@ -5,7 +5,8 @@ from discord import app_commands, ButtonStyle, Interaction
 from discord.ext import commands, tasks
 import asyncio, os, json, sqlite3, re, traceback, random
 from datetime import datetime, timedelta
-from typing import Optional, Dict
+from typing import Optional, Dict, Any, Callable
+from functools import wraps
 
 # Adjust the sys.path so that config_testing.py (in the root) is found.
 import sys
@@ -23,1089 +24,46 @@ from config_testing import (
 )
 from messages import trainee_messages, cadet_messages, welcome_to_swat, OPEN_TICKET_EMBED_TEXT, RECRUITMENT_MESSAGE, ROLE_REQUEST_MESSAGE
 from cogs.helpers import *
+from cogs.db_utils import *
 
-# -------------------------------
-# Database functions for recruitment
-# -------------------------------
-DATABASE_FILE = "data.db"
-EMBED_ID_FILE = "embed.txt"
-REQUESTS_FILE = "requests.json"
-
-def initialize_database():
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS entries (
-                thread_id TEXT PRIMARY KEY,
-                recruiter_id TEXT NOT NULL,
-                starttime TEXT NOT NULL,
-                endtime TEXT,
-                embed_id TEXT,
-                ingame_name TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                region TEXT NOT NULL,
-                reminder_sent INTEGER DEFAULT 0,
-                role_type TEXT NOT NULL CHECK(role_type IN ('trainee', 'cadet'))
-            )
-            """
-        )
-        conn.commit()
-        log("Database initialized successfully.")
-    except sqlite3.Error as e:
-        log(f"Database Initialization Error: {e}", level="error")
-    finally:
-        conn.close()
-
-initialize_database()
-
-def add_entry(thread_id: str, recruiter_id: str, starttime: datetime, endtime: datetime, 
-              role_type: str, embed_id: str, ingame_name: str, user_id: str, region: str) -> bool:
-    if role_type not in ("trainee", "cadet"):
-        raise ValueError("role_type must be either 'trainee' or 'cadet'.")
-    start_str = starttime.isoformat()
-    end_str = endtime.isoformat() if endtime else None
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """INSERT INTO entries 
-               (thread_id, recruiter_id, starttime, endtime, role_type, embed_id, ingame_name, user_id, region)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (thread_id, recruiter_id, start_str, end_str, role_type, embed_id, ingame_name, user_id, region)
-        )
-        conn.commit()
-        log(f"Added entry to DB: thread_id={thread_id}, user_id={user_id}, role_type={role_type}")
-        return True
-    except sqlite3.IntegrityError:
-        log("Database Error: Duplicate thread_id or integrity issue.", level="error")
-        return False
-    except sqlite3.Error as e:
-        log(f"Database Error (add_entry): {e}", level="error")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def remove_entry(thread_id: str) -> bool:
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM entries WHERE thread_id = ?", (thread_id,))
-        conn.commit()
-        removed = (cursor.rowcount > 0)
-        if removed:
-            log(f"Removed entry from DB for thread_id={thread_id}")
-        return removed
-    except sqlite3.Error as e:
-        log(f"Database Error (remove_entry): {e}", level="error")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def update_endtime(thread_id: str, new_endtime: datetime) -> bool:
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE entries SET endtime = ? WHERE thread_id = ?", (new_endtime.isoformat(), thread_id))
-        conn.commit()
-        updated = (cursor.rowcount > 0)
-        if updated:
-            log(f"Updated endtime for thread_id={thread_id} to {new_endtime.isoformat()}")
-        return updated
-    except sqlite3.Error as e:
-        log(f"Database Error (update_endtime): {e}", level="error")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def get_entry(thread_id: str) -> Optional[Dict]:
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """SELECT recruiter_id, starttime, endtime, role_type, embed_id, ingame_name, user_id, region, reminder_sent
-               FROM entries
-               WHERE thread_id = ?""",
-            (thread_id,)
-        )
-        row = cursor.fetchone()
-        if row:
-            return {
-                "thread_id": thread_id,
-                "recruiter_id": row[0],
-                "starttime": datetime.fromisoformat(row[1]),
-                "endtime": datetime.fromisoformat(row[2]) if row[2] else None,
-                "role_type": row[3],
-                "embed_id": row[4],
-                "ingame_name": row[5],
-                "user_id": row[6],
-                "region": row[7],
-                "reminder_sent": row[8]
-            }
-        return None
-    except sqlite3.Error as e:
-        log(f"Database Error (get_entry): {e}", level="error")
-        return None
-    finally:
-        if conn:
-            conn.close()
-
-def is_user_in_database(user_id: int) -> bool:
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """SELECT 1 FROM entries WHERE user_id = ? LIMIT 1""",
-            (str(user_id),)
-        )
-        result = cursor.fetchone()
-        return result is not None
-    except sqlite3.Error as e:
-        log(f"Database Error (is_user_in_database): {e}", level="error")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def update_application_ingame_name(thread_id: str, new_name: str) -> bool:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE entries SET ingame_name = ? WHERE thread_id = ?",
-            (new_name, thread_id)
-        )
-        conn.commit()
-        updated = cursor.rowcount > 0
-        if updated:
-            log(f"Updated ingame_name for thread {thread_id} to {new_name}")
-        return updated
-    except sqlite3.Error as e:
-        log(f"DB Error (update_application_ingame_name): {e}", level="error")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-# -------------------------------
-# Role Requests
-# -------------------------------
-def init_role_requests_db():
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS role_requests (
-                user_id TEXT PRIMARY KEY,
-                request_type TEXT NOT NULL,
-                details TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            )
-            """
-        )
-        conn.commit()
-        log("Role requests DB initialized successfully.")
-    except sqlite3.Error as e:
-        log(f"Role Requests DB Error: {e}", level="error")
-    finally:
-        conn.close()
-init_role_requests_db()
-
-def add_role_request(user_id: str, request_type: str, details: str) -> bool:
-    """
-    Adds a new role request to the role_requests table.
-    For a name change, request_type might be "name_change" and details is the new name.
-    For an "other" request, request_type is "other" and details is the request text.
-    """
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        ts = datetime.now().isoformat()
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO role_requests (user_id, request_type, details, timestamp)
-            VALUES (?, ?, ?, ?)
-            """,
-            (user_id, request_type, details, ts)
-        )
-        conn.commit()
-        return True
-    except sqlite3.Error as e:
-        log(f"DB Error (add_role_request): {e}", level="error")
-        return False
-    finally:
-        conn.close()
-
-def remove_role_request(user_id: str) -> bool:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM role_requests WHERE user_id = ?", (user_id,))
-        conn.commit()
-        return cursor.rowcount > 0
-    except sqlite3.Error as e:
-        log(f"DB Error (remove_role_request): {e}", level="error")
-        return False
-    finally:
-        conn.close()
-
-def get_role_request(user_id: str) -> Optional[Dict]:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, request_type, details, timestamp FROM role_requests WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row:
-            return {"user_id": row[0], "request_type": row[1], "details": row[2], "timestamp": row[3]}
-        return None
-    except sqlite3.Error as e:
-        log(f"DB Error (get_role_request): {e}", level="error")
-        return None
-    finally:
-        conn.close()
-
-def clear_role_requests() -> None:
-    """
-    Clears all role requests from the database.
-    """
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM role_requests")
-        conn.commit()
-        log("All role requests have been cleared.")
-    except sqlite3.Error as e:
-        log(f"Error clearing role requests: {e}", level="error")
-    finally:
-        conn.close()
-
-def get_role_requests() -> list:
-    """
-    Retrieves all role requests from the database and returns a list of dictionaries.
-    Each dictionary contains: user_id, request_type, details, and timestamp.
-    """
-    requests = []
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, request_type, details, timestamp FROM role_requests")
-        rows = cursor.fetchall()
-        for row in rows:
-            requests.append({
-                "user_id": row[0],
-                "request_type": row[1],
-                "details": row[2],
-                "timestamp": row[3]
-            })
-    except sqlite3.Error as e:
-        log(f"Error retrieving role requests: {e}", level="error")
-    finally:
-        conn.close()
-    return requests
-
-# -------------------------------
-# Applications requests functions
-# -------------------------------
-def init_application_requests_db():
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS application_requests (
-                user_id TEXT PRIMARY KEY,
-                request_type TEXT NOT NULL,
-                ingame_name TEXT NOT NULL,
-                age TEXT NOT NULL,
-                level TEXT NOT NULL,
-                join_reason TEXT NOT NULL,
-                previous_crews TEXT,
-                region TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            )
-            """
-        )
-        conn.commit()
-        log("Application requests DB initialized successfully.")
-    except sqlite3.Error as e:
-        log(f"Application Requests DB Error: {e}", level="error")
-    finally:
-        conn.close()
-
-init_application_requests_db()
-
-def add_application_request(user_id: str, data: Dict) -> bool:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        # Record the current timestamp
-        ts = datetime.now().isoformat()
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO application_requests 
-            (user_id, request_type, ingame_name, age, level, join_reason, previous_crews, region, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user_id,
-                data.get("request_type"),
-                data.get("ingame_name"),
-                data.get("age"),
-                data.get("level"),
-                data.get("join_reason"),
-                data.get("previous_crews"),
-                data.get("region"),
-                ts
-            )
-        )
-        conn.commit()
-        return True
-    except sqlite3.Error as e:
-        log(f"DB Error (add_application_request): {e}", level="error")
-        return False
-    finally:
-        conn.close()
-
-def remove_application_request(user_id: str) -> bool:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM application_requests WHERE user_id = ?", (user_id,))
-        conn.commit()
-        return cursor.rowcount > 0
-    except sqlite3.Error as e:
-        log(f"DB Error (remove_application_request): {e}", level="error")
-        return False
-    finally:
-        conn.close()
-
-def get_application_request(user_id: str) -> Optional[Dict]:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM application_requests WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row:
-            # Order of columns: user_id, request_type, ingame_name, age, level, join_reason, previous_crews, region, timestamp
-            return {
-                "user_id": row[0],
-                "request_type": row[1],
-                "ingame_name": row[2],
-                "age": row[3],
-                "level": row[4],
-                "join_reason": row[5],
-                "previous_crews": row[6],
-                "region": row[7],
-                "timestamp": row[8]
-            }
-        return None
-    except sqlite3.Error as e:
-        log(f"DB Error (get_application_request): {e}", level="error")
-        return None
-    finally:
-        conn.close()
-
-def clear_pending_requests() -> None:
-    """
-    Clears all pending application requests from the database.
-    """
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM application_requests")
-        conn.commit()
-        log("All pending application requests have been cleared.")
-    except sqlite3.Error as e:
-        log(f"Error clearing pending requests: {e}", level="error")
-    finally:
-        conn.close()
-
-def get_application_requests() -> list:
-    """
-    Retrieves all application requests from the database and returns a list of dictionaries.
-    Each dictionary contains: user_id, request_type, ingame_name, age, level, join_reason,
-    previous_crews, region, and timestamp.
-    """
-    requests = []
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, request_type, ingame_name, age, level, join_reason, previous_crews, region, timestamp FROM application_requests")
-        rows = cursor.fetchall()
-        for row in rows:
-            requests.append({
-                "user_id": row[0],
-                "request_type": row[1],
-                "ingame_name": row[2],
-                "age": row[3],
-                "level": row[4],
-                "join_reason": row[5],
-                "previous_crews": row[6],
-                "region": row[7],
-                "timestamp": row[8]
-            })
-    except sqlite3.Error as e:
-        log(f"Error retrieving application requests: {e}", level="error")
-    finally:
-        conn.close()
-    return requests
-
-
-
-# -------------------------------
-# Applications database functions
-# -------------------------------
-"""
-def migrate_application_db():
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    # List of new columns and their definitions.
-    new_columns = {
-        "join_reason": "TEXT",
-        "previous_crews": "TEXT",
-        "languages": "TEXT"
-    }
-    for column, definition in new_columns.items():
+def handle_interaction_errors(func: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        # Attempt to retrieve the interaction from kwargs or positional args.
+        interaction = kwargs.get("interaction")
+        if not interaction and len(args) >= 2:
+            interaction = args[1]
         try:
-            cursor.execute(f"ALTER TABLE application_threads ADD COLUMN {column} {definition}")
-            log(f"Column '{column}' added successfully.")
-        except sqlite3.OperationalError as e:
-            # Error message will contain "duplicate column name" if it already exists.
-            if f"duplicate column name: {column}" in str(e).lower():
-                log(f"Column '{column}' already exists. Skipping.")
-            else:
-                log(f"Error adding column '{column}': {e}", level="error")
-    conn.commit()
-    conn.close()
-    
-# Call this migration function once at startup:
-migrate_application_db()
+            return await func(*args, **kwargs)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ Bot lacks permission to perform this action.", ephemeral=True)
+            log(f"Forbidden error in {func.__name__}", level="error")
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"❌ HTTP error: {e}", ephemeral=True)
+            log(f"HTTP error in {func.__name__}: {e}", level="error")
+        except (ValueError, TypeError) as e:
+            await interaction.response.send_message(f"❌ Input error: {e}", ephemeral=True)
+            log(f"Input error in {func.__name__}: {e}", level="error")
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Unexpected error: {e}", ephemeral=True)
+            log(f"Unexpected error in {func.__name__}: {e}", level="error")
+    return wrapper
 
 
-def migrate_old_application_data():
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    # Update join_reason for rows that are NULL.
-    cursor.execute("UPDATE application_threads SET join_reason = 'Not provided' WHERE join_reason IS NULL")
-    cursor.execute("UPDATE application_threads SET previous_crews = 'Not provided' WHERE previous_crews IS NULL")
-    cursor.execute("UPDATE application_threads SET languages = 'Not provided' WHERE languages IS NULL")
-    conn.commit()
-    conn.close()
-    log("Migrated old application data: set default values for new columns.")
-
-# Call this after migrate_application_db():
-migrate_old_application_data()
-"""
-
-def init_applications_db():
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS application_threads (
-                thread_id                     TEXT PRIMARY KEY,
-                applicant_id                  TEXT NOT NULL,
-                recruiter_id                  TEXT,
-                starttime                     TEXT NOT NULL,
-                ingame_name                   TEXT NOT NULL,
-                region                        TEXT NOT NULL,
-                age                           TEXT NOT NULL,
-                level                         TEXT NOT NULL,
-                join_reason                   TEXT NOT NULL,
-                previous_crews                TEXT,
-                is_closed                     INTEGER DEFAULT 0,
-                status                        TEXT NOT NULL DEFAULT 'open',
-                ban_history_sent              INTEGER DEFAULT 0,
-                ban_history_reminder_count    INTEGER DEFAULT 0
-            )
-            """
-        )
-        conn.commit()
-        log("Applications DB (application_threads) initialized successfully with new ban history columns.")
-    except sqlite3.Error as e:
-        log(f"Applications DB Error: {e}", level="error")
-    finally:
-        if conn:
-            conn.close()
-
+# -------------------------------
+# Initialize databases
+# -------------------------------
+initialize_database()
+init_role_requests_db()
+init_application_requests_db()
 init_applications_db()
-
-
-
-def add_application(
-    thread_id: str,
-    applicant_id: str,
-    recruiter_id: Optional[str],
-    starttime: datetime,
-    ingame_name: str,
-    region: str,
-    age: str,
-    level: str,
-    join_reason: str = "",
-    previous_crews: str = ""
-) -> bool:
-    start_str = starttime.isoformat()
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO application_threads 
-            (thread_id, applicant_id, recruiter_id, starttime, ingame_name, region, age, level, join_reason, previous_crews, is_closed, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'open')
-            """,
-            (thread_id, applicant_id, recruiter_id, start_str, ingame_name, region, age, level, join_reason, previous_crews)
-        )
-        conn.commit()
-        log(f"Added new application thread {thread_id} from user {applicant_id}")
-        return True
-    except sqlite3.IntegrityError:
-        log("Duplicate thread_id in 'application_threads' or integrity issue.", level="error")
-        return False
-    except sqlite3.Error as e:
-        log(f"DB Error (add_application): {e}", level="error")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-
-
-def get_application(thread_id: str) -> Optional[Dict]:
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT applicant_id, recruiter_id, starttime, ingame_name, region, age, level, join_reason, previous_crews, is_closed
-            FROM application_threads
-            WHERE thread_id = ?
-            """,
-            (thread_id,)
-        )
-        row = cursor.fetchone()
-        if not row:
-            return None
-        return {
-            "thread_id": thread_id,
-            "applicant_id": row[0],
-            "recruiter_id": row[1],
-            "starttime": datetime.fromisoformat(row[2]),
-            "ingame_name": row[3],
-            "region": row[4],
-            "age": row[5],
-            "level": row[6],
-            "join_reason": row[7],
-            "previous_crews": row[8],
-            "is_closed": row[9]
-        }
-    except sqlite3.Error as e:
-        log(f"Database Error (get_application): {e}", level="error")
-        return None
-    finally:
-        if conn:
-            conn.close()
-
-
-def update_application_recruiter(thread_id: str, new_recruiter_id: str) -> bool:
-    """
-    Updates the recruiter_id for the given thread in application_threads.
-    """
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE application_threads
-            SET recruiter_id = ?
-            WHERE thread_id = ?
-            """,
-            (new_recruiter_id, thread_id)
-        )
-        conn.commit()
-        updated = (cursor.rowcount > 0)
-        if updated:
-            log(f"Application thread {thread_id} claimed by {new_recruiter_id}")
-        return updated
-    except sqlite3.Error as e:
-        log(f"DB Error (update_application_recruiter): {e}", level="error")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def close_application(thread_id: str) -> bool:
-    """
-    Marks is_closed=1 for the given thread in application_threads.
-    """
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE application_threads
-            SET is_closed = 1
-            WHERE thread_id = ?
-            """,
-            (thread_id,)
-        )
-        conn.commit()
-        closed = (cursor.rowcount > 0)
-        if closed:
-            log(f"Application thread {thread_id} marked as closed.")
-        return closed
-    except sqlite3.Error as e:
-        log(f"DB Error (close_application): {e}", level="error")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def remove_application(thread_id: str) -> bool:
-    """
-    Completely deletes the row from application_threads.
-    """
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM application_threads WHERE thread_id = ?", (thread_id,))
-        conn.commit()
-        removed = (cursor.rowcount > 0)
-        if removed:
-            log(f"Removed application thread {thread_id} from DB.")
-        return removed
-    except sqlite3.Error as e:
-        log(f"DB Error (remove_application): {e}", level="error")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def update_application_status(thread_id: str, new_status: str) -> bool:
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE application_threads SET status = ? WHERE thread_id = ?", (new_status, thread_id))
-        conn.commit()
-        updated = (cursor.rowcount > 0)
-        if updated:
-            log(f"Updated application {thread_id} status to {new_status}")
-        return updated
-    except sqlite3.Error as e:
-        log(f"DB Error (update_application_status): {e}", level="error")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def mark_application_removed(thread_id: str) -> bool:
-    conn = None
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE application_threads SET status = 'removed', is_closed = 1 WHERE thread_id = ?", (thread_id,))
-        conn.commit()
-        updated = (cursor.rowcount > 0)
-        if updated:
-            log(f"Marked application {thread_id} as removed")
-        return updated
-    except sqlite3.Error as e:
-        log(f"DB Error (mark_application_removed): {e}", level="error")
-        return False
-    finally:
-        if conn:
-            conn.close()
-
-def get_open_application(user_id: str) -> Optional[Dict]:
-    """
-    Returns the open application (if any) for the given applicant_id.
-    An open application is defined as a record in application_threads where:
-      - applicant_id equals the provided user_id,
-      - is_closed equals 0, and
-      - status equals 'open'.
-    
-    If an open application exists, returns a dictionary with its data;
-    otherwise, returns None.
-    """
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT thread_id, applicant_id, recruiter_id, starttime, ingame_name,
-                   region, age, level, join_reason, previous_crews, is_closed, status
-            FROM application_threads
-            WHERE applicant_id = ? AND is_closed = 0 AND status = 'open'
-            """,
-            (user_id,)
-        )
-        row = cursor.fetchone()
-        if row:
-            return {
-                "thread_id": row[0],
-                "applicant_id": row[1],
-                "recruiter_id": row[2],
-                "starttime": datetime.fromisoformat(row[3]),
-                "ingame_name": row[4],
-                "region": row[5],
-                "age": row[6],
-                "level": row[7],
-                "join_reason": row[8],
-                "previous_crews": row[9],
-                "is_closed": row[10],
-                "status": row[11]
-            }
-        else:
-            return None
-    except sqlite3.Error as e:
-        log(f"DB Error (get_open_application): {e}", level="error")
-        return None
-    finally:
-        if conn:
-            conn.close()
-
-def get_open_applications() -> list:
-    applications = []
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT thread_id, applicant_id, recruiter_id, ingame_name, region, ban_history_sent, starttime FROM application_threads WHERE is_closed = 0 AND status = 'open'"
-        )
-        rows = cursor.fetchall()
-        for row in rows:
-            applications.append({
-                "thread_id": row[0],
-                "applicant_id": row[1],
-                "recruiter_id": row[2],
-                "ingame_name": row[3],
-                "region": row[4],
-                "ban_history_sent": int(row[5]),
-                "starttime": row[6]
-            })
-    except sqlite3.Error as e:
-        log(f"DB Error (get_open_applications): {e}", level="error")
-    finally:
-        if conn:
-            conn.close()
-    return applications
-
-def sort_applications(apps: list) -> list:
-    def sort_key(app):
-        # For unclaimed, assign 0 if ban_history_sent is 0, 1 if ban_history_sent is 1.
-        # For claimed applications (recruiter_id exists), assign 2.
-        if app["recruiter_id"]:
-            return (2, 0)
-        else:
-            return (0, app["ban_history_sent"])
-    return sorted(apps, key=sort_key)
-
-# -------------------------------
-# APPLICATION ATTEMPTS DATABASE FUNCTIONS
-# -------------------------------
-
-def init_application_attempts_db():
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS application_attempts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                applicant_id TEXT NOT NULL,
-                region TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                status TEXT NOT NULL,
-                log_url TEXT
-            )
-            """
-        )
-        conn.commit()
-        log("Application attempts DB initialized successfully.")
-    except sqlite3.Error as e:
-        log(f"Application Attempts DB Error: {e}", level="error")
-    finally:
-        if conn:
-            conn.close()
-
 init_application_attempts_db()
-
-def add_application_attempt(applicant_id: str, region: str, status: str, log_url: str) -> bool:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        timestamp = datetime.now().isoformat()
-        cursor.execute(
-            "INSERT INTO application_attempts (applicant_id, region, timestamp, status, log_url) VALUES (?, ?, ?, ?, ?)",
-            (str(applicant_id), region, timestamp, status, log_url)
-        )
-        conn.commit()
-        return True
-    except sqlite3.Error as e:
-        log(f"DB Error (add_application_attempt): {e}", level="error")
-        return False
-    finally:
-        conn.close()
-
-def get_recent_closed_attempts(applicant_id: str) -> list:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
-        cursor.execute(
-            "SELECT timestamp, log_url FROM application_attempts WHERE applicant_id = ? AND status = 'closed_region_attempt' AND timestamp >= ?",
-            (str(applicant_id), seven_days_ago)
-        )
-        rows = cursor.fetchall()
-        return [{"timestamp": row[0], "log_url": row[1]} for row in rows]
-    except sqlite3.Error as e:
-        log(f"DB Error (get_recent_closed_attempts): {e}", level="error")
-        return []
-    finally:
-        conn.close()
-
-def get_application_stats(days: int = 0) -> dict:
-    """
-    Returns a dictionary with counts for each status.
-    If days > 0, only applications submitted in the last `days` are counted.
-    """
-    stats = {"accepted": 0, "denied": 0, "withdrawn": 0, "open": 0}
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cutoff = None
-        if days and days > 0:
-            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
-        for status in stats.keys():
-            if cutoff:
-                cursor.execute(
-                    "SELECT COUNT(*) FROM application_threads WHERE status = ? AND starttime >= ?",
-                    (status, cutoff)
-                )
-            else:
-                cursor.execute(
-                    "SELECT COUNT(*) FROM application_threads WHERE status = ?",
-                    (status,)
-                )
-            stats[status] = cursor.fetchone()[0]
-    except sqlite3.Error as e:
-        log(f"DB Error (get_application_stats): {e}", level="error")
-    finally:
-        conn.close()
-    return stats
-
-
-def get_application_history(applicant_id: str) -> list:
-    history = []
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        # Get application submissions.
-        cursor.execute(
-            "SELECT starttime, status, ingame_name, region FROM application_threads WHERE applicant_id = ?",
-            (applicant_id,)
-        )
-        for row in cursor.fetchall():
-            history.append({
-                "timestamp": row[0],
-                "status": row[1],
-                "type": "submission",
-                "details": f"IGN: {row[2]}, Region: {row[3]}"
-            })
-        # Get closed-region attempts.
-        cursor.execute(
-            "SELECT timestamp, status, region, log_url FROM application_attempts WHERE applicant_id = ?",
-            (applicant_id,)
-        )
-        for row in cursor.fetchall():
-            history.append({
-                "timestamp": row[0],
-                "status": row[1],
-                "type": "attempt",
-                "details": f"Region: {row[2]}, [Log Entry]({row[3]})" if row[3] else f"Region: {row[2]}"
-            })
-    except sqlite3.Error as e:
-        log(f"DB Error (get_application_history): {e}", level="error")
-    finally:
-        conn.close()
-    # Sort history by timestamp (most recent first)
-    history.sort(key=lambda x: x["timestamp"], reverse=True)
-    return history
-
-# -------------------------------
-# APPLICATION STATUS
-# -------------------------------
-def init_region_status():
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS region_status (
-            region TEXT PRIMARY KEY,
-            status TEXT NOT NULL
-        )
-        """
-    )
-    # Insert default values if not present.
-    for region in ['EU', 'NA', 'SEA']:
-        cursor.execute(
-            "INSERT OR IGNORE INTO region_status (region, status) VALUES (?, ?)",
-            (region, "OPEN")
-        )
-    conn.commit()
-    conn.close()
-
 init_region_status()
-def get_region_status(region: str) -> Optional[str]:
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT status FROM region_status WHERE region = ?", (region.upper(),))
-        row = cursor.fetchone()
-        if row:
-            return row[0]
-        return None
-    except sqlite3.Error as e:
-        log(f"Error getting region status: {e}", level="error")
-        return None
-    finally:
-        conn.close()
-
-def update_region_status(region: str, status: str) -> bool:
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    try:
-        cursor.execute("UPDATE region_status SET status = ? WHERE region = ?", (status.upper(), region.upper()))
-        conn.commit()
-        return cursor.rowcount > 0
-    except sqlite3.Error as e:
-        log(f"Error updating region status: {e}", level="error")
-        return False
-    finally:
-        conn.close()
-
-# -------------------------------
-# Timeouts/Blacklists Database Functions
-# -------------------------------
-
-def init_timeouts_db():
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS timeouts (
-                user_id TEXT PRIMARY KEY,
-                type TEXT NOT NULL,  -- "timeout" or "blacklist"
-                expires_at TEXT     -- ISO timestamp for timeout; NULL for blacklist
-            )
-            """
-        )
-        conn.commit()
-        log("Timeouts/Blacklists DB initialized successfully.")
-    except sqlite3.Error as e:
-        log(f"Timeouts DB Error: {e}", level="error")
-    finally:
-        conn.close()
-
 init_timeouts_db()
-
-
-def add_timeout_record(user_id: str, record_type: str, expires_at: Optional[datetime] = None) -> bool:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO timeouts (user_id, type, expires_at) VALUES (?, ?, ?)",
-            (user_id, record_type, expires_at.isoformat() if expires_at else None)
-        )
-        conn.commit()
-        return True
-    except sqlite3.Error as e:
-        log(f"DB Error (add_timeout_record): {e}", level="error")
-        return False
-    finally:
-        conn.close()
-
-
-def remove_timeout_record(user_id: str) -> bool:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM timeouts WHERE user_id = ?", (user_id,))
-        conn.commit()
-        return cursor.rowcount > 0
-    except sqlite3.Error as e:
-        log(f"DB Error (remove_timeout_record): {e}", level="error")
-        return False
-    finally:
-        conn.close()
-
-
-def get_timeout_record(user_id: str) -> Optional[Dict]:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, type, expires_at FROM timeouts WHERE user_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row:
-            return {
-                "user_id": row[0],
-                "type": row[1],
-                "expires_at": datetime.fromisoformat(row[2]) if row[2] else None
-            }
-        return None
-    except sqlite3.Error as e:
-        log(f"DB Error (get_timeout_record): {e}", level="error")
-        return None
-    finally:
-        conn.close()
-
-
-def get_all_timeouts() -> list:
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id, type, expires_at FROM timeouts")
-        rows = cursor.fetchall()
-        result = []
-        for row in rows:
-            result.append({
-                "user_id": row[0],
-                "type": row[1],
-                "expires_at": datetime.fromisoformat(row[2]) if row[2] else None
-            })
-        return result
-    except sqlite3.Error as e:
-        log(f"DB Error (get_all_timeouts): {e}", level="error")
-        return []
-    finally:
-        conn.close()
-
-
 
 # -------------------------------
 # Helper functions
 # -------------------------------
-
-
 def get_rounded_time() -> datetime:
     now = datetime.now()
     minutes_to_add = (15 - now.minute % 15) % 15
@@ -1162,20 +120,17 @@ async def set_user_nickname(member: discord.Member, role_label: str, username: s
         log(f"HTTPException changing nickname for {member.id}: {e}", level="error")
 
 async def close_thread(interaction: discord.Interaction, thread: discord.Thread) -> None:
-    try:
-        result = remove_entry(thread.id)
-        if result:
-            try:
-                await thread.edit(locked=True, archived=True)
-                log(f"Closed and archived thread {thread.id}")
-            except discord.Forbidden:
-                await interaction.followup.send("❌ Bot lacks permission to lock/archive this thread.", ephemeral=True)
-            except discord.HTTPException as e:
-                await interaction.followup.send(f"❌ Error archiving thread: {e}", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Not a registered voting thread!", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Error closing thread: {e}", ephemeral=True)
+    result = remove_entry(thread.id)
+    if result:
+        try:
+            await thread.edit(locked=True, archived=True)
+            log(f"Closed and archived thread {thread.id}")
+        except discord.Forbidden:
+            await interaction.followup.send("❌ Bot lacks permission to lock/archive this thread.", ephemeral=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Error archiving thread: {e}", ephemeral=True)
+    else:
+        await interaction.followup.send("❌ Not a registered voting thread!", ephemeral=True)
 
 async def create_voting_embed(start_time, end_time, recruiter: int, region, ingame_name, extended: bool = False) -> discord.Embed:
     try:
@@ -1201,9 +156,10 @@ async def create_voting_embed(start_time, end_time, recruiter: int, region, inga
         embed.add_field(name=end_title, value=create_discord_timestamp(end_time), inline=True)
         embed.add_field(name="Thread managed by:", value=f"<@{recruiter}>", inline=False)
         return embed
-    except Exception as e:
+    except (ValueError, TypeError) as e:
         log(f"Error in create_voting_embed: {e}", level="error")
         return discord.Embed(description="❌ Error creating voting embed.", color=0xff0000)
+
 
 # -------------------------------
 # Persistent Views and Modals
@@ -1283,7 +239,7 @@ class ApplicationControlView(discord.ui.View):
             return
         updated = update_application_recruiter(str(interaction.channel.id), str(interaction.user.id))
         if updated:
-            await interaction.response.send_message(f"✅ {interaction.user.mention} has claimed this application.")
+            await interaction.response.send_message(embed=discord.Embed(title=f"✅ {interaction.user.name} has claimed this application.", colour=0x23ef56))
         else:
             await interaction.response.send_message("❌ Failed to update recruiter in DB!", ephemeral=True)
 
@@ -1607,18 +563,12 @@ class RequestActionView(discord.ui.View):
         await interaction.response.send_modal(modal)
 
 class DenyReasonModal(discord.ui.Modal):
-    def __init__(
-        self,
-        user_id: int,
-        original_message: discord.Message,
-        request_type: str = None,
-        timestamp: str = None
-    ):
+    def __init__(self, user_id: int, original_message: discord.Message, request_type: str = None, timestamp: str = None):
         super().__init__(title="Denial Reason")
         self.user_id = user_id
         self.original_message = original_message
-        self.request_type = request_type      # optional
-        self.timestamp = timestamp            # optional
+        self.request_type = request_type
+        self.timestamp = timestamp
 
     reason = discord.ui.TextInput(
         label="Reason for Denial",
@@ -1626,11 +576,10 @@ class DenyReasonModal(discord.ui.Modal):
         placeholder="Explain why this request is denied...",
         required=True
     )
-
+    
+    @handle_interaction_errors
     async def on_submit(self, interaction: discord.Interaction):
         reason_text = self.reason.value
-
-        # Attempt to DM the user
         user = interaction.client.get_user(self.user_id)
         dm_sent = False
         if user:
@@ -1650,55 +599,28 @@ class DenyReasonModal(discord.ui.Modal):
                         title=f"Your {self.request_type.capitalize()} Request has been Denied",
                         color=discord.Color.red()
                     )
-
-                dm_embed.add_field(
-                    name="Reason for Denial",
-                    value=reason_text,
-                    inline=False
-                )
+                dm_embed.add_field(name="Reason for Denial", value=reason_text, inline=False)
                 if self.timestamp:
-                    dm_embed.add_field(
-                        name="Opened At",
-                        value=self.timestamp,
-                        inline=False
-                    )
+                    dm_embed.add_field(name="Opened At", value=self.timestamp, inline=False)
                 await user.send(embed=dm_embed)
                 dm_sent = True
             except discord.Forbidden:
-                # DM failed, but do not respond here because we want to send one final response later.
                 dm_sent = False
+            except discord.HTTPException as e:
+                log(f"HTTP error sending DM in DenyReasonModal: {e}", level="error")
+                dm_sent = False
+
+        if self.original_message.embeds:
+            updated_embed = self.original_message.embeds[0]
         else:
-            # User not found; we'll let the staff know via our final message.
-            dm_sent = False
+            updated_embed = discord.Embed(title="Denied", color=discord.Color.red())
+        updated_embed.color = discord.Color.red()
+        updated_embed.title += " (Denied with reason)"
+        updated_embed.add_field(name="Reason:", value=f"```\n{reason_text}\n```", inline=False)
+        updated_embed.add_field(name="Denied by:", value=f"<@{interaction.user.id}>", inline=False)
+        await self.original_message.edit(embed=updated_embed, view=None)
 
-        # Update the original request embed in the channel
-        try:
-            if self.original_message.embeds:
-                updated_embed = self.original_message.embeds[0]
-            else:
-                updated_embed = discord.Embed(title="Denied", color=discord.Color.red())
-            updated_embed.color = discord.Color.red()
-            updated_embed.title += " (Denied with reason)"
-            updated_embed.add_field(name="Reason:", value=f"```\n{reason_text}\n```", inline=False)
-            updated_embed.add_field(name="Denied by:", value=f"<@{interaction.user.id}>", inline=False)
-            await self.original_message.edit(embed=updated_embed, view=None)
-        except Exception as e:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    f"❌ Failed to update the message in the channel: {e}",
-                    ephemeral=True
-                )
-            else:
-                await interaction.followup.send(
-                    f"❌ Failed to update the message in the channel: {e}",
-                    ephemeral=True
-                )
-            return
-
-        # Remove the role request entry from the database
         remove_role_request(str(self.user_id))
-
-        # Finally, send a single confirmation response
         final_msg = (
             "✅ Denial reason submitted. " +
             ("User has been notified via DM." if dm_sent else "Could not DM the user (they may have DMs blocked).")
@@ -1707,6 +629,7 @@ class DenyReasonModal(discord.ui.Modal):
             await interaction.response.send_message(final_msg, ephemeral=True)
         else:
             await interaction.followup.send(final_msg, ephemeral=True)
+
 
 
 class RegionSelectionView(discord.ui.View):
@@ -1789,7 +712,7 @@ class TraineeDetailsModal(discord.ui.Modal, title="Trainee Application Details")
         placeholder="List any previous crews and why you left, if applicable.",
         required=False
     )
-
+    @handle_interaction_errors
     async def on_submit(self, interaction: discord.Interaction):
         user_id_str = str(interaction.user.id)
         # Save only the five fields in our pending_applications dict.
@@ -1810,7 +733,7 @@ class TraineeDetailsModal(discord.ui.Modal, title="Trainee Application Details")
 
 class NameChangeModal(discord.ui.Modal, title="Request Name Change"):
     new_name = discord.ui.TextInput(label="New Name", placeholder="Enter your new name")
-
+    @handle_interaction_errors
     async def on_submit(self, interaction: discord.Interaction):
         if add_role_request(str(interaction.user.id), "name_change", self.new_name.value):
             # Proceed to send the request to the role requests channel
@@ -1850,7 +773,7 @@ class NameChangeModal(discord.ui.Modal, title="Request Name Change"):
 
 class RequestOther(discord.ui.Modal, title="RequestOther"):
     other = discord.ui.TextInput(label="Requesting:", placeholder="What do you want to request?")
-
+    @handle_interaction_errors
     async def on_submit(self, interaction: discord.Interaction):
         user_id_str = str(interaction.user.id)
         if add_role_request(user_id_str, "other", self.other.value):
@@ -1871,7 +794,7 @@ class RequestOther(discord.ui.Modal, title="RequestOther"):
             embed.add_field(name="Make sure to actually ADD the ROLE BEFORE clicking accept!", value="", inline=False)
             view = RequestActionView(
                 user_id=interaction.user.id,
-                request_type="name_change",
+                request_type="other",
                 new_name=self.other.value,
                 timestamp=interaction.created_at.strftime("%Y-%m-%d %H:%M:%S")  # Pass the timestamp here
             )
@@ -2103,8 +1026,9 @@ class RecruitmentCog(commands.Cog):
                     embed_message_id = msg.id
                     set_stored_embed("main_embed", str(msg.id), str(channel.id))
                     log(f"Created new embed with ID: {embed_message_id}")
-        except Exception as e:
+        except (discord.DiscordException, Exception) as e:
             log(f"Error in check_embed_task: {e}", level="error")
+
     
     @tasks.loop(minutes=5)
     async def check_application_embed_task(self):
@@ -2359,33 +1283,32 @@ class RecruitmentCog(commands.Cog):
         # Auto-claim if the message author is a recruiter and the application is unclaimed:
         if not app_data.get("recruiter_id") and any(role.id == RECRUITER_ID for role in message.author.roles):
             update_application_recruiter(str(message.channel.id), str(message.author.id))
-            # Optionally send a message in the thread indicating the auto-claim:
-            await message.channel.send(f"ℹ️ Application automatically claimed by {message.author.mention}.")
-            # Update app_data to reflect new recruiter:
+            embed = discord.Embed(title=f"ℹ️ Application automatically claimed by *{message.author.name}*.", colour=0xc0c0c0)
+            await message.channel.send(embed=embed)
             app_data["recruiter_id"] = str(message.author.id)
 
         # Only check messages from the applicant
         if message.author.id != int(app_data["applicant_id"]):
             return
 
-        # Check each attachment
+        # Check each attachment for an image and update DB accordingly
         for att in message.attachments:
             is_image = False
             if att.content_type and att.content_type.startswith("image/"):
                 is_image = True
-            else:
-                if att.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                    is_image = True
+            elif att.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                is_image = True
             if is_image:
-                # If we have not yet confirmed ban history for this thread, send confirmation.
-                conn = sqlite3.connect(DATABASE_FILE)
-                cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE application_threads SET ban_history_sent = ? WHERE thread_id = ?",
-                    (1, message.channel.id)
-                )
-                conn.commit()
-                conn.close()
+                try:
+                    with sqlite3.connect(DATABASE_FILE) as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "UPDATE application_threads SET ban_history_sent = ? WHERE thread_id = ?",
+                            (1, message.channel.id)
+                        )
+                        conn.commit()
+                except sqlite3.Error as e:
+                    log(f"DB update error in on_message for thread {message.channel.id}: {e}", level="error")
                 if message.channel.id not in self.ban_history_submitted:
                     confirmation = discord.Embed(
                         title="✅ Ban History Submitted!",
@@ -2395,6 +1318,7 @@ class RecruitmentCog(commands.Cog):
                     await message.channel.send(embed=confirmation)
                     self.ban_history_submitted.add(message.channel.id)
                 break
+
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
@@ -2460,6 +1384,7 @@ class RecruitmentCog(commands.Cog):
                 )
 
     @app_commands.command(name="hello", description="Say hello to the bot")
+    @handle_interaction_errors
     async def hello_command(self, interaction: discord.Interaction):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
@@ -2467,53 +1392,50 @@ class RecruitmentCog(commands.Cog):
         await interaction.response.send_message(f"✅ Hello, {interaction.user.mention}!", ephemeral=True)
 
     @app_commands.command(name="force_add", description="Manually add an existing trainee / cadet thread to the database!")
+    @handle_interaction_errors
     async def force_add(self, interaction: discord.Interaction, user_id: str, ingame_name: str, region: app_commands.Choice[str], role_type: app_commands.Choice[str]):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
             return
-        try:
-            thread = interaction.channel
-            user_id_int = int(user_id)
-            guild = interaction.client.get_guild(GUILD_ID)
-            leadership_role = guild.get_role(LEADERSHIP_ID) if guild else None
-            if not leadership_role or leadership_role not in interaction.user.roles:
-                await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
-                return
-            selected_region = region.value
-            selected_role = role_type.value
-            start_time = get_rounded_time()
-            end_time = start_time + timedelta(days=7)
-            validate_entry = add_entry(
-                thread_id=str(thread.id),
-                recruiter_id=str(interaction.user.id),
-                starttime=start_time,
-                endtime=end_time,
-                role_type=str(selected_role),
-                embed_id=None,
-                ingame_name=ingame_name,
-                user_id=str(user_id_int),
-                region=selected_region
+        thread = interaction.channel
+        user_id_int = int(user_id)
+        guild = interaction.client.get_guild(GUILD_ID)
+        leadership_role = guild.get_role(LEADERSHIP_ID) if guild else None
+        if not leadership_role or leadership_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            return
+        selected_region = region.value
+        selected_role = role_type.value
+        start_time = get_rounded_time()
+        end_time = start_time + timedelta(days=7)
+        validate_entry = add_entry(
+            thread_id=str(thread.id),
+            recruiter_id=str(interaction.user.id),
+            starttime=start_time,
+            endtime=end_time,
+            role_type=str(selected_role),
+            embed_id=None,
+            ingame_name=ingame_name,
+            user_id=str(user_id_int),
+            region=selected_region
+        )
+        if validate_entry:
+            await interaction.response.send_message(
+                f"✅ Successfully added user ID `{user_id_int}` with in-game name `{ingame_name}` as `{selected_role}` in region `{selected_region}`.",
+                ephemeral=True
             )
-            if validate_entry:
-                await interaction.response.send_message(
-                    f"✅ Successfully added user ID `{user_id_int}` with in-game name `{ingame_name}` as `{selected_role}` in region `{selected_region}`.",
-                    ephemeral=True
-                )
-                activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
-                if activity_channel:
-                    embed = create_user_activity_log_embed("recruitment", f"Manually added trainee", interaction.user, f"User has added <@{user_id_int} as a trainee.")
-                    await activity_channel.send(embed=embed)
-            else:
-                await interaction.response.send_message(
-                    f"❌ Error adding user ID `{user_id_int}` to the database. Possibly a duplicate or DB issue.",
-                    ephemeral=True
-                )
-        except ValueError:
-            await interaction.response.send_message("❌ Invalid user ID provided.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+            activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+            if activity_channel:
+                embed = create_user_activity_log_embed("recruitment", f"Manually added trainee", interaction.user, f"User has added <@{user_id_int}> as a trainee.")
+                await activity_channel.send(embed=embed)
+        else:
+            await interaction.response.send_message(
+                f"❌ Error adding user ID `{user_id_int}` to the database. Possibly a duplicate or DB issue.",
+                ephemeral=True
+            )
 
     @app_commands.command(name="list_requests", description="Lists the currently stored pending requests.")
+    @handle_interaction_errors
     async def list_requests(self, interaction: discord.Interaction):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
@@ -2562,6 +1484,7 @@ class RecruitmentCog(commands.Cog):
         await interaction.followup.send(f"**Current Pending Requests:**\n\n{reply_text}", ephemeral=True)
 
     @app_commands.command(name="list_applications", description="List all current open applications with their status.")
+    @handle_interaction_errors
     async def list_applications(self, interaction: discord.Interaction):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
@@ -2603,6 +1526,7 @@ class RecruitmentCog(commands.Cog):
 
 
     @app_commands.command(name="clear_requests", description="Clears the entire pending requests list.")
+    @handle_interaction_errors
     async def clear_requests(self, interaction: discord.Interaction):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
@@ -2620,6 +1544,7 @@ class RecruitmentCog(commands.Cog):
             await activity_channel.send(embed=embed)
 
     @app_commands.command(name="votinginfo", description="Show info about the current voting thread")
+    @handle_interaction_errors
     async def votinginfo_command(self, interaction: discord.Interaction):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
@@ -2646,6 +1571,7 @@ class RecruitmentCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="remove", description="Remove a user from trainee / cadet program and close thread!")
+    @handle_interaction_errors
     async def lock_thread_command(self, interaction: discord.Interaction, days: int):
 
         if not is_in_correct_guild(interaction):
@@ -2726,7 +1652,7 @@ class RecruitmentCog(commands.Cog):
                         log(f"Error assigning timeout role to {member.id}: {e}", level="error")
                 log(f"User {member.id} has been timed out until {expires}.")
                 create_user_activity_log_embed("recruitment", "Timed Out User", member, f"User has been timed out until {expires}. (Thread ID: <#{interaction.channel.id}>)")
-                reapply_info = f"User is timed out from applications until {expires.strftime('%Y-%m-%d %H:%M:%S')}."
+                reapply_info = f"User is timed out from applications until {expires.strftime('%d-%m-%Y')}."
         # --- End Timeout/Blacklist Logic ---
 
         embed = discord.Embed(
@@ -2745,6 +1671,7 @@ class RecruitmentCog(commands.Cog):
             
 
     @app_commands.command(name="rename", description="Rename the trainee/cadet thread and update the in-game name in the voting embed.")
+    @handle_interaction_errors
     async def rename(self, interaction: discord.Interaction, new_name: str):
         # Check the command is used in the correct guild.
         if not is_in_correct_guild(interaction):
@@ -2776,11 +1703,7 @@ class RecruitmentCog(commands.Cog):
         # Determine the role suffix based on the role type.
         role_suffix = "Trainee Application" if app_entry["role_type"] == "trainee" else "Cadet Notes"
         new_thread_name = f"{new_name} - {role_suffix}"
-        try:
-            await interaction.channel.edit(name=new_thread_name)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Failed to rename thread: {e}", ephemeral=True)
-            return
+        await interaction.channel.edit(name=new_thread_name)
 
         # Regenerate the voting embed so the new name appears correctly.
         # Use the stored start time, end time (or default to +7 days), recruiter (if claimed), and region.
@@ -2807,6 +1730,7 @@ class RecruitmentCog(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="promote", description="Promote the user in the current voting thread (Trainee->Cadet or Cadet->SWAT).")
+    @handle_interaction_errors
     async def promote_user_command(self, interaction: discord.Interaction):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
@@ -2929,6 +1853,7 @@ class RecruitmentCog(commands.Cog):
 
     @app_commands.command(name="extend", description="Extend the current thread's voting period.")
     @app_commands.describe(days="How many days to extend?")
+    @handle_interaction_errors
     async def extend_thread_command(self, interaction: discord.Interaction, days: int):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
@@ -2992,6 +1917,7 @@ class RecruitmentCog(commands.Cog):
             await interaction.response.send_message("❌ Failed to update endtime in DB.", ephemeral=True)
 
     @app_commands.command(name="resend_voting", description="Resends a voting embed!")
+    @handle_interaction_errors
     async def resend_voting_command(self, interaction: discord.Interaction):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
@@ -3018,6 +1944,7 @@ class RecruitmentCog(commands.Cog):
             await interaction.response.send_message(f"❌ Error occurred: {e}", ephemeral=True)
 
     @app_commands.command(name="early_vote", description="Resends a voting embed!")
+    @handle_interaction_errors
     async def early_vote(self, interaction: discord.Interaction):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
@@ -3097,6 +2024,7 @@ class RecruitmentCog(commands.Cog):
 # APPLICATION COMMANDS
 #
     @app_commands.command(name="app_info", description="Show info about the current application thread.")
+    @handle_interaction_errors
     async def app_info_command(self, interaction: discord.Interaction):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ Wrong guild!", ephemeral=True)
@@ -3131,6 +2059,7 @@ class RecruitmentCog(commands.Cog):
 
 
     @app_commands.command(name="app_remove", description="Remove this application and lock/archive the thread.")
+    @handle_interaction_errors
     async def app_remove_command(self, interaction: discord.Interaction, days: int):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ Wrong guild!", ephemeral=True)
@@ -3140,21 +2069,23 @@ class RecruitmentCog(commands.Cog):
             return
 
         app_data = get_application(str(interaction.channel.id))
+        print(app_data)
         # Instead of deleting, mark the application as removed.
         removed = mark_application_removed(str(interaction.channel.id))
         if not removed:
             await interaction.response.send_message("❌ No application data found or already removed!", ephemeral=True)
             return
 
-                # --- New Blacklist/Timeout Logic for /remove ---
-        # Get the guild and member for the applicant (stored in data["user_id"])
+        # --- New Blacklist/Timeout Logic for /remove ---
+        # Get the guild and member for the applicant (stored in app_data["applicant_id"])
         guild = interaction.guild
-        member = guild.get_member(int(app_data["user_id"])) if guild else None
+        member = guild.get_member(int(app_data["applicant_id"])) if guild else None
         now = datetime.now()
+        reapply_info = ""  # This variable will store what action was taken regarding reapplying.
         if member:
             if days == -1:
                 # Only remove the application; no blacklist/timeout is added.
-                pass
+                reapply_info = "No restrictions applied. The user may reapply immediately."
             elif days == 0:
                 # Add a blacklist record and assign the blacklist role.
                 add_timeout_record(str(member.id), "blacklist")
@@ -3164,6 +2095,7 @@ class RecruitmentCog(commands.Cog):
                         await member.add_roles(blacklist_role)
                     except Exception as e:
                         log(f"Error assigning blacklist role to {member.id}: {e}", level="error")
+                reapply_info = "User has been blacklisted and cannot reapply."
             elif days >= 1:
                 # Add a timeout record with an expiration time.
                 expires = now + timedelta(days=days)
@@ -3174,19 +2106,28 @@ class RecruitmentCog(commands.Cog):
                         await member.add_roles(timeout_role)
                     except Exception as e:
                         log(f"Error assigning timeout role to {member.id}: {e}", level="error")
+                reapply_info = f"User is timed out until {expires.strftime('%d-%m-%Y')} and may reapply after that date."
 
-
+        # Build the embed that will be sent as a confirmation.
         embed = discord.Embed(
             title="❌ This application has been removed!",
             colour=0xf94144
         )
+        embed.add_field(name="Recruiter:", value=f"<@{interaction.user.id}>", inline=False)
+        if reapply_info:
+            embed.add_field(name="Reapply Info", value=reapply_info, inline=False)
         embed.set_footer(text="🔒This thread is locked now!")
         await interaction.response.send_message(embed=embed)
 
         activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
         if activity_channel:
-            embed = create_user_activity_log_embed("recruitment", f"Application Removed", interaction.user, f"User has removed this application. (Thread ID: <#{interaction.channel.id}>)")
-            await activity_channel.send(embed=embed)
+            log_embed = create_user_activity_log_embed(
+                "recruitment",
+                "Application Removed",
+                interaction.user,
+                f"User has removed this application. (Thread ID: <#{interaction.channel.id}>)"
+            )
+            await activity_channel.send(embed=log_embed)
 
         # Now lock/archive the thread
         try:
@@ -3198,7 +2139,9 @@ class RecruitmentCog(commands.Cog):
             await interaction.response.send_message(f"❌ HTTP error: {e}", ephemeral=True)
             return
 
+
     @app_commands.command(name="app_accept", description="Accept this application, awarding the Trainee role to the applicant.")
+    @handle_interaction_errors
     async def app_accept_command(self, interaction: discord.Interaction):
         # Immediately defer so we can use followup responses
         await interaction.response.defer(ephemeral=False)
@@ -3232,7 +2175,7 @@ class RecruitmentCog(commands.Cog):
         if not app_data.get("recruiter_id"):
             update_application_recruiter(str(interaction.channel.id), str(interaction.user.id))
             app_data["recruiter_id"] = str(interaction.user.id)
-            await interaction.followup.send("ℹ️ Application was unclaimed. It has now been claimed by you. \n *Processing the command, please wait*", ephemeral=True)
+            await interaction.followup.send("ℹ️ Application was unclaimed. It has now been claimed by you. \n *Processing the command, please wait*")
 
         # Now do the "Trainee add" logic:
         applicant_id = int(app_data["applicant_id"])
@@ -3339,6 +2282,7 @@ class RecruitmentCog(commands.Cog):
             description=f"<@{applicant_id}> is now a Trainee.",
             colour=0x00b050
         )
+        acceptance_embed.add_field(name="Recruiter: ", value=f"<@{interaction.user.id}>", inline=False)
         acceptance_embed.set_footer(text="🔒 This thread is locked now.")
         await interaction.followup.send(embed=acceptance_embed, ephemeral=False)
         
@@ -3363,6 +2307,7 @@ class RecruitmentCog(commands.Cog):
             pass
 
     @app_commands.command(name="app_accept_cadet", description="Accept this application, and get the person to cadet immediatly.")
+    @handle_interaction_errors
     async def app_accept_cadet_command(self, interaction: discord.Interaction):
         # Immediately defer so we can use followup responses
         await interaction.response.defer(ephemeral=False)
@@ -3515,6 +2460,7 @@ class RecruitmentCog(commands.Cog):
     @app_commands.command(name="app_deny", description="Deny the application with a reason and a note about reapplying.")
     @app_commands.describe(reason="Why is this application being denied?",
                         can_reapply="Enter -1 for no timeout, 0 for blacklist, or number of days for timeout.")
+    @handle_interaction_errors
     async def app_deny_command(self, interaction: discord.Interaction, reason: str, can_reapply: int):
         await interaction.response.defer(ephemeral=False)
         if not is_in_correct_guild(interaction):
@@ -3562,7 +2508,7 @@ class RecruitmentCog(commands.Cog):
                         log(f"Error assigning timeout role to {member.id}: {e}", level="error")
                 log(f"User {member.id} has been timed out until {expires}.", level="info")
                 create_user_activity_log_embed("recruitment", f"Timeout User", interaction.user, f"User has timed out <@{member.id}> until {expires}")
-                reapply_info = f"User can reapply on {expires.strftime('%Y-%m-%d %H:%M:%S')}."
+                reapply_info = f"User can reapply on {expires.strftime('%d-%m-%Y')}."
         # --- End Timeout/Blacklist Logic ---
 
         # Mark the application as closed and update status
@@ -3578,7 +2524,7 @@ class RecruitmentCog(commands.Cog):
         elif can_reapply == 0:
             dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou have been blacklisted from applying for SWAT. Please contact the recruiters via a ticket to appeal.\n\nThank you for your interest!\n\n", inline=False)
         elif can_reapply >= 1:
-            dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are restricted from applying for {can_reapply} days. You can reapply on {expires.strftime('%Y-%m-%d %H:%M:%S')}.\n\nThank you for your interest!\n\n", inline=False)
+            dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are restricted from applying for {can_reapply} days. You can reapply on {expires.strftime('%d-%m-%Y')}.\n\nThank you for your interest!\n\n", inline=False)
         
         dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value="We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form](https://google.de)\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
 
@@ -3609,30 +2555,39 @@ class RecruitmentCog(commands.Cog):
 
 
     @app_commands.command(name="app_claim", description="Claim this application.")
+    @handle_interaction_errors
     async def app_claim_command(self, interaction: discord.Interaction):
-        # Look up application data in DB using the thread ID:
+        # Retrieve application data for the current thread.
         app_data = get_application(str(interaction.channel.id))
         if not app_data:
             await interaction.response.send_message("❌ No application data found for this thread!", ephemeral=True)
             return
 
-        # Check if the user has the Recruiter role:
+        # Check if the user has the Recruiter role.
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
         if not recruiter_role or recruiter_role not in interaction.user.roles:
             await interaction.response.send_message("❌ Only recruiters can claim this application!", ephemeral=True)
             return
 
-        # Update DB to mark the current user as the recruiter:
+        # **New Check:** Ensure the application is not already claimed.
+        if app_data.get("recruiter_id"):
+            await interaction.response.send_message(
+                "❌ This application has already been claimed!",
+                ephemeral=True
+            )
+            return
+
+        # If unclaimed, update the DB to mark the current user as the recruiter.
         updated = update_application_recruiter(str(interaction.channel.id), str(interaction.user.id))
         if updated:
-            await interaction.response.send_message(
-                f"✅ {interaction.user.mention} has claimed this application."
-            )
+            await interaction.response.send_message(embed=discord.Embed(title=f"✅ {interaction.user.name} has claimed this application.", colour=0x23ef56))
         else:
             await interaction.response.send_message("❌ Failed to update recruiter in DB!", ephemeral=True)
 
 
+
     @app_commands.command(name="blacklist", description="Manually blacklist a user by their USERID.")
+    @handle_interaction_errors
     async def blacklist_command(self, interaction: discord.Interaction, user_id: str):
         # (Optional) Check for proper permissions (e.g. leadership role)
         guild = interaction.guild
@@ -3652,9 +2607,16 @@ class RecruitmentCog(commands.Cog):
                 log(f"Error assigning blacklist role to {user_id}: {e}", level="error")
         log(f"User {user_id} has been blacklisted.", level="info")
         create_user_activity_log_embed("recruitment", f"Blacklist User", interaction.user, f"User has blacklisted <@{user_id}>")
-        await interaction.response.send_message(f"User <@{user_id}> has been blacklisted.", ephemeral=True)
+        
+        embed = discord.Embed(
+            title="User Blacklisted",
+            description=f"User <@{user_id}> has been blacklisted.",
+            colour=discord.Colour.red()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     
     @app_commands.command(name="show_blacklists", description="Lists all active blacklists and timeouts.")
+    @handle_interaction_errors
     async def show_blacklists(self, interaction: discord.Interaction):
         records = get_all_timeouts()
         if not records:
@@ -3670,8 +2632,9 @@ class RecruitmentCog(commands.Cog):
         reply = "\n".join(lines)
         await interaction.response.send_message(f"**Active Blacklists/Timeouts:**\n{reply}", ephemeral=True)
 
-    @app_commands.command(name="remove_timeout", description="Removes the blacklist/timeout from a user by their USERID.")
-    async def remove_timeout_command(self, interaction: discord.Interaction, user_id: str):
+    @app_commands.command(name="remove_restriction", description="Removes the blacklist/timeout from a user by their USERID.")
+    @handle_interaction_errors
+    async def remove_restriction_command(self, interaction: discord.Interaction, user_id: str):
         guild = interaction.guild
         if not guild:
             await interaction.response.send_message("Guild not found.", ephemeral=True)
@@ -3694,9 +2657,19 @@ class RecruitmentCog(commands.Cog):
                 log(f"Error removing roles from user {user_id}: {e}", level="error")
             log(f"User {user_id} has been removed from blacklist/timeout.", level="info")
             create_user_activity_log_embed("recruitment", f"Remove Timeout/Blacklist", interaction.user, f"User has removed timeout/blacklist from <@{user_id}>")
-            await interaction.response.send_message(f"Timeout/blacklist removed from user <@{user_id}>.", ephemeral=True)
+            embed = discord.Embed(
+                title="Restriction Removed",
+                description=f"Timeout/blacklist removed from user <@{user_id}>.",
+                colour=discord.Colour.green()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            await interaction.response.send_message("No timeout/blacklist record found for that user.", ephemeral=True)
+            embed = discord.Embed(
+                title="No Restriction Found",
+                description="No timeout/blacklist record found for that user.",
+                colour=discord.Colour.orange()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 #
@@ -3719,6 +2692,7 @@ class RecruitmentCog(commands.Cog):
             app_commands.Choice(name="Closed", value="CLOSED")
         ]
 )
+    @handle_interaction_errors
     async def toggle_applications(self, interaction: discord.Interaction, region: str = "EU", status: str = "OPEN"):
         # Since region and status are strings, just convert them to uppercase for consistency.
         region_val = region.upper()   # e.g. "EU", "NA", or "SEA"
@@ -3751,6 +2725,7 @@ class RecruitmentCog(commands.Cog):
             await interaction.response.send_message("Failed to update region status.", ephemeral=True)
 
     @app_commands.command(name="app_stats", description="Show application statistics.")
+    @handle_interaction_errors
     async def app_stats(self, interaction: discord.Interaction, days: int = 0):
         guild = interaction.client.get_guild(GUILD_ID)
         recruiter_role = guild.get_role(RECRUITER_ID) if guild else None
@@ -3773,6 +2748,7 @@ class RecruitmentCog(commands.Cog):
 
 
     @app_commands.command(name="app_history", description="Show all application attempts for a user.")
+    @handle_interaction_errors
     async def app_history(self, interaction: discord.Interaction, user_id: str):
         guild = interaction.client.get_guild(GUILD_ID)
         recruiter_role = guild.get_role(RECRUITER_ID) if guild else None
@@ -3797,6 +2773,8 @@ class RecruitmentCog(commands.Cog):
             "withdrawn": "⚠️",
             "open": "🟢"
         }
+        
+        # Build the history lines.
         for entry in history:
             try:
                 dt = datetime.fromisoformat(entry['timestamp'])
@@ -3813,7 +2791,13 @@ class RecruitmentCog(commands.Cog):
                 "────────────────────────"
             )
             lines.append(line)
+        
+        # Join all lines into a single string.
         description = "\n".join(lines)
+
+        # Truncate if description is too long.
+        if len(description) > 4096:
+            description = description[:4093] + "..."
 
         embed = discord.Embed(
             title=f"📜 Application History for {user_id}",
@@ -3821,7 +2805,10 @@ class RecruitmentCog(commands.Cog):
             color=discord.Color.green()
         )
         embed.set_footer(text="Note: Timestamps are in local time (YYYY-MM-DD HH:MM).")
+        
+        # Send the embed once, after the loop.
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 
 async def setup(bot: commands.Bot):
