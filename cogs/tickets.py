@@ -163,11 +163,17 @@ class LOAModal(discord.ui.Modal, title="Leave of Absence (LOA)"):
     async def on_submit(self, interaction: discord.Interaction):
         log(f"LOAModal submitted by {interaction.user.id}.")
         try:
-            # Validate date format
-            datetime.strptime(self.end_date.value, "%Y-%m-%d")
+            # Validate date format and parse the date
+            end_date_obj = datetime.strptime(self.end_date.value, "%Y-%m-%d")
         except ValueError:
             await interaction.response.send_message("❌ Invalid date format. Please use YYYY-MM-DD.", ephemeral=True)
             log("User provided invalid date format in LOAModal.")
+            return
+
+        # Ensure the end date is not in the past
+        if end_date_obj.date() < datetime.now().date():
+            await interaction.response.send_message("❌ End date cannot be in the past.", ephemeral=True)
+            log("User provided an end date that is in the past in LOAModal.")
             return
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -196,6 +202,7 @@ class LOAModal(discord.ui.Modal, title="Leave of Absence (LOA)"):
         except discord.HTTPException as e:
             await interaction.response.send_message(f"❌ HTTP Error sending messages: {e}", ephemeral=True)
             log(f"HTTP error sending LOA embed in thread {thread.id if thread else 'None'}: {e}", level="error")
+
 
 class TicketView(discord.ui.View):
     def __init__(self):

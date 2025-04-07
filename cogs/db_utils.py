@@ -166,7 +166,8 @@ def init_role_requests_db():
                     user_id TEXT PRIMARY KEY,
                     request_type TEXT NOT NULL,
                     details TEXT NOT NULL,
-                    timestamp TEXT NOT NULL
+                    timestamp TEXT NOT NULL,
+                    reminder_sent INTEGER DEFAULT 0
                 )
                 """
             )
@@ -244,6 +245,40 @@ def get_role_requests() -> list:
     except sqlite3.Error as e:
         log(f"Error retrieving role requests: {e}", level="error")
     return requests
+
+def get_pending_role_requests_no_reminder() -> list:
+    """Return role requests that have not yet been reminded (reminder_sent = 0)."""
+    requests = []
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT user_id, request_type, details, timestamp, reminder_sent FROM role_requests WHERE reminder_sent = 0"
+            )
+            rows = cursor.fetchall()
+            for row in rows:
+                requests.append({
+                    "user_id": row[0],
+                    "request_type": row[1],
+                    "details": row[2],
+                    "timestamp": row[3],
+                    "reminder_sent": row[4]
+                })
+    except sqlite3.Error as e:
+        log(f"Error retrieving pending role requests: {e}", level="error")
+    return requests
+
+def mark_role_request_reminder_sent(user_id: str) -> bool:
+    """Mark the role request for the given user as having had its reminder sent."""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE role_requests SET reminder_sent = 1 WHERE user_id = ?", (user_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    except sqlite3.Error as e:
+        log(f"Error marking reminder as sent for user_id {user_id}: {e}", level="error")
+        return False
 
 # -------------------------------
 # Applications requests functions
