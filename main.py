@@ -54,7 +54,6 @@ async def reload_cog_command(interaction: discord.Interaction, cog_name: str):
 async def shardinfo(interaction: discord.Interaction):
     await interaction.response.send_message(f"This interaction is on shard {interaction.client.shard_id}.", ephemeral=True)
 
-
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")

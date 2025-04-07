@@ -428,7 +428,8 @@ def init_applications_db():
                     is_closed                     INTEGER DEFAULT 0,
                     status                        TEXT NOT NULL DEFAULT 'open',
                     ban_history_sent              INTEGER DEFAULT 0,
-                    ban_history_reminder_count    INTEGER DEFAULT 0
+                    ban_history_reminder_count    INTEGER DEFAULT 0,
+                    silenced                      INTEGER DEFAULT 0
                 )
                 """
             )
@@ -652,6 +653,35 @@ def sort_applications(apps: list) -> list:
         else:
             return (0, app["ban_history_sent"])
     return sorted(apps, key=sort_key)
+
+def set_application_silence(thread_id: str, silent: bool) -> bool:
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE application_threads SET silenced = ? WHERE thread_id = ?",
+            (1 if silent else 0, thread_id)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        log(f"Error updating silenced status for thread {thread_id}: {e}", level="error")
+        return False
+    finally:
+        conn.close()
+
+def is_application_silenced(thread_id: str) -> bool:
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT silenced FROM application_threads WHERE thread_id = ?", (thread_id,))
+        row = cursor.fetchone()
+        return row is not None and row[0] == 1
+    except Exception as e:
+        log(f"Error checking silenced status for thread {thread_id}: {e}", level="error")
+        return False
+    finally:
+        conn.close()
 
 # -------------------------------
 # APPLICATION ATTEMPTS DATABASE FUNCTIONS

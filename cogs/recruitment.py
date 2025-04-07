@@ -819,6 +819,31 @@ class TraineeDetailsModal(discord.ui.Modal, title="Trainee Application Details")
     @handle_interaction_errors
     async def on_submit(self, interaction: discord.Interaction):
         user_id_str = str(interaction.user.id)
+        # Validate that age and level are numeric
+        if not (self.age.value.isdigit() and self.level.value.isdigit()):
+            await interaction.response.send_message("❌ Age and level must be numbers.", ephemeral=True)
+            return
+        
+        age_int = int(self.age.value)
+        if age_int < 16:
+            guild = interaction.guild
+            if guild:
+                member = guild.get_member(interaction.user.id)
+                # Add a blacklist record (using your existing function)
+                add_timeout_record(str(interaction.user.id), "blacklist")
+                if member:
+                    blacklist_role = guild.get_role(BLACKLISTED_ROLE_ID)
+                    if blacklist_role and blacklist_role not in member.roles:
+                        try:
+                            await member.add_roles(blacklist_role)
+                        except Exception as e:
+                            log(f"Error adding blacklist role for underage user: {e}", level="error")
+            await interaction.response.send_message(
+                f"❌ You have been blacklisted because you are underage (under 16). If you wish to appeal, please open a <#{TICKET_CHANNEL_ID}> with the recruiters.",
+                ephemeral=True
+            )
+            return
+        
         # Save only the five fields in our pending_applications dict.
         data = {
             "request_type": "trainee_role",
@@ -1237,6 +1262,10 @@ class RecruitmentCog(commands.Cog):
             last_rem = self.reminder_times.get(thread_id)
             if last_rem and (now - last_rem) < timedelta(minutes=1):
                 continue
+
+            if is_application_silenced(thread_id):
+                log(f"Thread {thread_id} is silenced; skipping notification.", level="info")
+                continue  # Skip sending notifications for this thread
 
             start = datetime.fromisoformat(starttime)
             # Only process threads that have been open long enough (1 minute for testing; use 24 hours in production)
@@ -2754,8 +2783,7 @@ class RecruitmentCog(commands.Cog):
         options = [
             "Excessive ban history",
             "Recent ban(s) within the last 30 days",
-            "Level 20+ requirement not met",
-            "Happy said no"
+            "Level 20+ requirement not met"
         ]
         # Filter the options based on the current input (ignoring case)
         return [
@@ -3024,7 +3052,29 @@ class RecruitmentCog(commands.Cog):
         # Send the embed once, after the loop.
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @app_commands.command(name="app_silence", description="Toggle silence for notifications in this application thread.")
+    @handle_interaction_errors
+    async def app_silence(self, interaction: discord.Interaction):
+        if not is_in_correct_guild(interaction):
+            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return
+        if not isinstance(interaction.channel, discord.Thread):
+            await interaction.response.send_message("❌ This command must be used in an application thread.", ephemeral=True)
+            return
 
+        thread_id = str(interaction.channel.id)
+        # Check current silence status
+        current_silence = is_application_silenced(thread_id)
+        # Toggle the silence status
+        new_state = not current_silence
+        result = set_application_silence(thread_id, new_state)
+        if result:
+            if new_state:
+                await interaction.response.send_message("🔇 Notifications have been silenced for this application thread.", ephemeral=True)
+            else:
+                await interaction.response.send_message("🔊 Notifications have been resumed for this application thread.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Failed to update the silence status.", ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RecruitmentCog(bot))
