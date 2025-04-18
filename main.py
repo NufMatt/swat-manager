@@ -4,8 +4,21 @@ from discord.ext import commands, tasks
 import asyncio
 from config_testing import TOKEN_FILE
 from cogs.helpers import *
+import os, threading
+from sqlite_web.sqlite_web import initialize_app, app
 with open(TOKEN_FILE, "r", encoding="utf-8") as file:
     TOKEN = file.read().strip()
+
+def start_sqlite_web():
+    # Initialisiere das sqlite-web‑Interface
+    #   args: (datenbank-file, read_only=False, password=None, url_prefix=None)
+    initialize_app('data.db', False, None, None)  
+    # Starte den eingebauten Flask‑Server
+    app.run(host='0.0.0.0', port=8080, debug=False)
+
+# In Deinem main() noch vor bot.run() starten
+threading.Thread(target=start_sqlite_web, daemon=True).start()
+
 
 intents = discord.Intents.default()
 intents.message_content = True

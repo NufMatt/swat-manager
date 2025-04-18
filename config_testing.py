@@ -22,7 +22,7 @@ CADET_ROLE            = 1321853586384093235  # Changed
 SWAT_ROLE_ID          = 1321163290948145212  # Changed
 OFFICER_ROLE_ID       = 1334844188470022144  # Changed
 RECRUITER_ID          = 1334600500448067707  # Changed
-LEADERSHIP_ID         = 1300539048225673226  # Changed
+LEADERSHIP_ID         = 1335590246074810459  # Changed
 EU_ROLE_ID            = 1334943073519538217  # Changed
 NA_ROLE_ID            = 1334942947703132290  # Changed
 SEA_ROLE_ID           = 1334943169485475840  # Changed
@@ -59,6 +59,8 @@ USE_LOCAL_JSON = False
 LOCAL_JSON_FILE = "json-formatting.json"
 CHECK_INTERVAL = 30         # in seconds
 CACHE_UPDATE_INTERVAL = 300  # in seconds
+SWAT_WEBSITE_URL = "https://cnrswat.com"
+SWAT_WEBSITE_TOKEN_FILE = "website-api-key.txt"
 
 API_URLS = {
     "SEA": "https://api.gtacnr.net/cnr/players?serverId=SEA",

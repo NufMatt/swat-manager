@@ -4,11 +4,12 @@ import discord
 from discord.ext import tasks, commands
 import requests, json, asyncio, aiohttp, re, pytz, sqlite3
 from datetime import datetime, timedelta
+import io
 from config_testing import (
     USE_LOCAL_JSON, LOCAL_JSON_FILE, CHECK_INTERVAL, CACHE_UPDATE_INTERVAL,
     API_URLS, API_URLS_FIVEM, STATUS_CHANNEL_ID, GUILD_ID, MENTOR_ROLE_ID,
     CADET_ROLE, TRAINEE_ROLE, SWAT_ROLE_ID, RANK_HIERARCHY, ROLE_TO_RANK, EMBEDS_FILE, LEADERSHIP_ID, LEADERSHIP_EMOJI,
-    SWAT_LOGO_EMOJI, MENTOR_EMOJI, TRAINEE_EMOJI, CADET_EMOJI
+    SWAT_LOGO_EMOJI, MENTOR_EMOJI, TRAINEE_EMOJI, CADET_EMOJI, SWAT_WEBSITE_URL, SWAT_WEBSITE_TOKEN_FILE
 )
 from cogs.helpers import log, set_stored_embed, get_stored_embed
 
@@ -30,6 +31,7 @@ class PlayerListCog(commands.Cog):
         # For playtime increment calculation.
         self.last_update_time = None
         self.update_game_status.start()
+        self.send_unique_count.start()
 
     def setup_database(self):
         """Creates the necessary tables if they do not exist."""
@@ -444,20 +446,81 @@ class PlayerListCog(commands.Cog):
                     log(f"Unexpected error sending embed for region {region}: {ex}", level="error")
                     break
 
-    def format_playtime(self, seconds: float) -> str:
-        m, s = divmod(int(seconds), 60)
-        h, m = divmod(m, 60)
-        parts = []
-        if h:
-            parts.append(f"{h}h")
-        if m:
-            parts.append(f"{m}m")
-        if s or not parts:
-            parts.append(f"{s}s")
-        return " ".join(parts)
+    def format_playtime(self, seconds: int) -> str:
+        # your existing formatter
+        hours, rem = divmod(seconds, 3600)
+        mins, secs = divmod(rem, 60)
+        return f"{int(hours)}h {int(mins)}m"
 
-    @commands.hybrid_command(name="topplaytime", description="Shows top playtime for SWAT members in the given timeframe (days).")
+
+    @tasks.loop(hours=1) # Change for production
+    async def send_unique_count(self):
+        """Every 6 h: count distinct SWAT UIDs seen in the last 24 h and POST to your API."""
+        await self.bot.wait_until_ready()
+
+        # 1) figure our 24 h cutoff
+        cutoff = datetime.utcnow() - timedelta(hours=24)
+        cutoff_iso = cutoff.isoformat()
+
+        # 2) count how many unique SWAT UIDs have a playtime_log since cutoff
+        cur = self.db_conn.cursor()
+        cur.execute("""
+            SELECT COUNT(DISTINCT l.uid) AS cnt
+              FROM playtime_log l
+              JOIN players_info p ON p.uid = l.uid
+             WHERE datetime(l.log_time) >= datetime(?)
+               AND p.current_name LIKE '[SWAT]%'
+        """, (cutoff_iso,))
+        row = cur.fetchone()
+        count = row["cnt"] if row else 0
+
+        # 3) read your website API token
+        try:
+            with open(SWAT_WEBSITE_TOKEN_FILE, "r") as f:
+                api_token = f.read().strip()
+        except Exception as e:
+            log(f"Could not read SWAT_WEBSITE_TOKEN_FILE: {e}", level="error")
+            return
+
+        # 4) fire off the POST
+        url = f"{SWAT_WEBSITE_URL}/api/players/count"
+        headers = {"X-Api-Token": api_token, "Content-Type": "application/json",
+                    "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) " 
+                    "Chrome/114.0.0.0 Safari/537.36"),
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Accept-Language": "en-US,en;q=0.9"}
+        payload = {"playerCount": str(count)}
+        log(f"Sending unique SWAT count={count} to {url}", level="info")
+
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            resp.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            body = getattr(e.response, "text", "")
+            log(f"Players count API HTTP {e.response.status_code}", level="error")
+        except requests.exceptions.RequestException as e:
+            log(f"Error sending players count: {e}", level="error")
+        else:
+            # parse JSON to confirm success
+            try:
+                data = resp.json()
+            except ValueError:
+                log(f"Invalid JSON from players count API: {resp.text}", level="error")
+            else:
+                if data.get("success"):
+                    log(f"Successfully sent unique SWAT count={count}", level="info")
+                else:
+                    err = data.get("error", "unknown")
+                    log(f"Players count API error response: {err}", level="error")
+
+
     @commands.has_role(LEADERSHIP_ID)
+    @commands.hybrid_command(
+        name="topplaytime",
+        description="Shows top playtime for SWAT members in the given timeframe (days)."
+    )
     async def topplaytime(self, ctx: commands.Context, days: int):
         cutoff = datetime.utcnow() - timedelta(days=days)
         cutoff_iso = cutoff.isoformat()
@@ -474,24 +537,68 @@ class PlayerListCog(commands.Cog):
             """, (cutoff_iso,))
             results = cur.fetchall()
         except Exception as e:
-            log(f"Error querying top playtime: {e}", level="error")
-            await ctx.send("An error occurred while fetching top playtime data.", ephemeral=True)
+            log("error" ,f"Error querying top playtime: {e}")
+            await ctx.send("❌ An error occurred while fetching top playtime data.", ephemeral=True)
             return
 
         if not results:
             await ctx.send(f"No playtime data for SWAT members in the last {days} day(s).", ephemeral=True)
             return
 
-        description = f"Top SWAT playtime in the last {days} day(s):\n\n"
+        # Build the full report as plain text
+        lines = [f"Top SWAT playtime in the last {days} day(s):", ""]
         for idx, row in enumerate(results, 1):
             playtime_formatted = self.format_playtime(row["playtime"])
-            description += f"**{idx}. {row['current_name']}** – {playtime_formatted}\n"
-        embed = discord.Embed(title="Top Playtime (SWAT Members)", description=description, color=0x28ef05)
+            lines.append(f"{idx:>2}. {row['current_name']:<25} – {playtime_formatted}")
+
+        report = "\n".join(lines)
+
+        # If it exceeds Discord's embed-desc limit (4096 chars), send as a text file
+        if len(report) > 4000:
+            fp = io.StringIO(report)
+            fp.seek(0)
+            await ctx.send(
+                "⚠️ Result is too long for an embed, here's a text file instead:",
+                file=discord.File(fp, filename="topplaytime.txt"),
+                ephemeral=True
+            )
+            return
+
+        # Otherwise send as a neat embed
+        embed = discord.Embed(
+            title="Top Playtime (SWAT Members)",
+            description=report,
+            color=0x28ef05
+        )
         embed.set_footer(text="Data is a rough estimate and not 100% accurate")
         await ctx.send(embed=embed, ephemeral=True)
 
-    @commands.hybrid_command(name="player", description="Shows playtime, last seen and past names for the specified player.")
+    @topplaytime.error
+    async def topplaytime_error(self, ctx: commands.Context, error):
+        if isinstance(error, commands.MissingRole):
+            await ctx.send(
+                "❌ You must have the Leadership role to use `/topplaytime`.",
+                ephemeral=True
+            )
+        else:
+            raise error
+
+    @topplaytime.error
+    async def topplaytime_error(self, ctx: commands.Context, error):
+        if isinstance(error, commands.MissingRole):
+            await ctx.send(
+                "❌ You do not have permissions to run this command.",
+                ephemeral=True
+            )
+        else:
+            # Let other errors bubble up (optional)
+            raise error
+
     @commands.has_role(LEADERSHIP_ID)
+    @commands.hybrid_command(
+        name="player",
+        description="Shows playtime, last seen and past names for the specified player."
+    )
     async def player(self, ctx: commands.Context, *, name: str):
         try:
             cur = self.db_conn.cursor()
@@ -500,13 +607,15 @@ class PlayerListCog(commands.Cog):
             if player_info is None:
                 cur.execute("""
                     SELECT uid FROM name_changes
-                    WHERE lower(old_name)=lower(?) OR lower(new_name)=lower(?)
+                    WHERE lower(old_name)=lower(?) 
+                       OR lower(new_name)=lower(?)
                     LIMIT 1
                 """, (name, name))
                 row = cur.fetchone()
                 if row:
                     cur.execute("SELECT * FROM players_info WHERE uid = ?", (row["uid"],))
                     player_info = cur.fetchone()
+
             if player_info is None:
                 await ctx.send(f"Player `{name}` not found in the logs.", ephemeral=True)
                 return
@@ -514,53 +623,72 @@ class PlayerListCog(commands.Cog):
             uid = player_info["uid"]
             current_name = player_info["current_name"]
             total_playtime = player_info["total_playtime"]
-            # Look up the last seen time from playtime_log.
+
+            # Last seen
             cur.execute("SELECT MAX(log_time) as last_seen FROM playtime_log WHERE uid = ?", (uid,))
             last_seen_row = cur.fetchone()
+            last_seen = "Unknown"
             if last_seen_row and last_seen_row["last_seen"]:
                 try:
                     last_seen_dt = datetime.fromisoformat(last_seen_row["last_seen"])
-                    now_dt = datetime.utcnow()
-                    diff = now_dt - last_seen_dt
+                    diff = datetime.utcnow() - last_seen_dt
                     if diff < timedelta(hours=24):
                         total_seconds = diff.total_seconds()
                         if total_seconds < 3600:
-                            minutes = int(total_seconds // 60)
-                            last_seen = f"{minutes} min ago"
+                            last_seen = f"{int(total_seconds//60)} min ago"
                         else:
-                            hours = int(total_seconds // 3600)
-                            last_seen = f"{hours} hour{'s' if hours != 1 else ''} ago"
+                            last_seen = f"{int(total_seconds//3600)} hour(s) ago"
                     else:
                         last_seen = last_seen_dt.strftime("%d.%m.%Y - %H:%M")
-                except Exception as e:
+                except Exception:
                     last_seen = last_seen_row["last_seen"]
-            else:
-                last_seen = "Unknown"
 
+            # Name change history
             cur.execute("""
-                SELECT old_name, new_name, change_time FROM name_changes
+                SELECT old_name, new_name, change_time 
+                FROM name_changes
                 WHERE uid = ?
                 ORDER BY change_time DESC
             """, (uid,))
             name_changes = cur.fetchall()
 
-            description = f"**UID:** {uid}\n"
-            description += f"**Current Name:** {current_name}\n"
-            description += f"**Last Seen:** {last_seen}\n"
-            description += f"**Total Playtime:** {self.format_playtime(total_playtime)}\n\n"
+            description = (
+                f"**UID:** {uid}\n"
+                f"**Current Name:** {current_name}\n"
+                f"**Last Seen:** {last_seen}\n"
+                f"**Total Playtime:** {self.format_playtime(total_playtime)}\n\n"
+            )
             if name_changes:
                 description += "**Past Name Changes:**\n"
                 for change in name_changes:
-                    description += f"- {change['old_name']} → {change['new_name']} (at {change['change_time']})\n"
+                    description += (
+                        f"- {change['old_name']} → {change['new_name']} "
+                        f"(at {change['change_time']})\n"
+                    )
             else:
                 description += "No past name changes logged."
 
-            embed = discord.Embed(title="Player Information", description=description, color=0x28ef05)
+            embed = discord.Embed(
+                title="Player Information",
+                description=description,
+                color=0x28ef05
+            )
             embed.set_footer(text="Data is a rough estimate and not 100% accurate")
             await ctx.send(embed=embed, ephemeral=True)
+
         except Exception as e:
-            log(f"Error in /player command: {e}", level="error")
-            await ctx.send("An error occurred while fetching the player data.", ephemeral=True)
+            log("error", f"Error in /player command: {e}")
+            await ctx.send("❌ An error occurred while fetching the player data.", ephemeral=True)
+
+    @player.error
+    async def player_error(self, ctx: commands.Context, error):
+        if isinstance(error, commands.MissingRole):
+            await ctx.send(
+                "❌ You do not have permissions to run this command.",
+                ephemeral=True
+            )
+        else:
+            raise error
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PlayerListCog(bot))

@@ -2,6 +2,7 @@
 token.txt
 token-test.txt
 account_token.txt
+website-api-key.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

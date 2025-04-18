@@ -142,7 +142,7 @@ Need help? Choose the right department for your request:
 {recruiter_emoji} **Recruiters**  
 → Inquiries about the Trainee program, applications, or recruitment in general.  
 
-{leaddeveloper_emoji} **Lead Bot Developer**  
+{leaddeveloper_emoji} **Bot Developer**  
 → Issues related to SWAT bots, including errors, bugs, or technical problems.  
 
 💤 **LOA (Leave of Absence)**  

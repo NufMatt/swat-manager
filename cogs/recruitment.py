@@ -7,6 +7,8 @@ import asyncio, os, json, sqlite3, re, traceback, random
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Callable
 from functools import wraps
+import requests
+import threading
 
 # Adjust the sys.path so that config_testing.py (in the root) is found.
 import sys
@@ -20,7 +22,7 @@ from config_testing import (
     TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE,
     PLUS_ONE_EMOJI, MINUS_ONE_EMOJI, LEAD_BOT_DEVELOPER_ID, LEAD_BOT_DEVELOPER_EMOJI,
     INTEGRATIONS_MANAGER, RECRUITER_EMOJI, LEADERSHIP_EMOJI, APPLICATION_EMBED_ID_FILE, APPLY_CHANNEL_ID, ACTIVITY_CHANNEL_ID,
-    TIMEOUT_ROLE_ID, BLACKLISTED_ROLE_ID
+    TIMEOUT_ROLE_ID, BLACKLISTED_ROLE_ID, SWAT_WEBSITE_URL, SWAT_WEBSITE_TOKEN_FILE
 )
 from messages import trainee_messages, cadet_messages, welcome_to_swat, OPEN_TICKET_EMBED_TEXT, RECRUITMENT_MESSAGE, ROLE_REQUEST_MESSAGE
 from cogs.helpers import *
@@ -407,7 +409,7 @@ class RequestActionView(discord.ui.View):
         except Exception:
             original_user_id = self.user_id
 
-        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message(
                 "❌ This command can only be used in the specified guild.",
@@ -415,7 +417,7 @@ class RequestActionView(discord.ui.View):
             )
             return
 
-        if not recruiter_role or recruiter_role not in interaction.user.roles:
+        if not leadership_role or leadership_role not in interaction.user.roles:
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.",
                 ephemeral=True
@@ -530,17 +532,10 @@ class RequestActionView(discord.ui.View):
                 await interaction.response.send_message("❌ No pending request found.", ephemeral=True)
                 return
 
-            req_type = request_data.get("request_type", "")
-            if req_type in ["name_change", "other"]:
-                leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
-                if not leadership_role or (leadership_role not in interaction.user.roles):
-                    await interaction.response.send_message("❌ You do not have permission to ignore this request.", ephemeral=True)
-                    return
-            else:
-                recruiter_role = interaction.guild.get_role(RECRUITER_ID)
-                if not recruiter_role or (recruiter_role not in interaction.user.roles):
-                    await interaction.response.send_message("❌ You do not have permission to ignore this request.", ephemeral=True)
-                    return
+            leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+            if not leadership_role or (leadership_role not in interaction.user.roles):
+                await interaction.response.send_message("❌ You do not have permission to ignore this request.", ephemeral=True)
+                return
 
             updated_embed = interaction.message.embeds[0]
             updated_embed.color = discord.Color.red()
@@ -572,14 +567,9 @@ class RequestActionView(discord.ui.View):
             return
 
         req_type = request_data.get("request_type", "")
-        if req_type in ["name_change", "other"]:
-            if not leadership_role or (leadership_role not in interaction.user.roles):
-                await interaction.response.send_message("❌ You do not have permission to deny this request.", ephemeral=True)
-                return
-        else:
-            if not recruiter_role or (recruiter_role not in interaction.user.roles):
-                await interaction.response.send_message("❌ You do not have permission to deny this request.", ephemeral=True)
-                return
+        if not leadership_role or (leadership_role not in interaction.user.roles):
+            await interaction.response.send_message("❌ You do not have permission to deny this request.", ephemeral=True)
+            return
 
         modal = DenyReasonModal(
             user_id=original_user_id,
@@ -794,7 +784,7 @@ class TraineeDetailsModal(discord.ui.Modal, title="Trainee Application Details")
     )
     age = discord.ui.TextInput(
         label="Your Age",
-        placeholder="Enter your age (e.g., >16)",
+        placeholder="Enter your age",
         required=True,
         max_length=3
     )
@@ -1185,57 +1175,57 @@ class RecruitmentCog(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def check_expired_endtimes_task(self):
-        conn = None
+        await self.bot.wait_until_ready()
+        now = datetime.now()
+        conn = sqlite3.connect(DATABASE_FILE)
         try:
-            conn = sqlite3.connect(DATABASE_FILE)
             cursor = conn.cursor()
-            now = datetime.now()
-            cursor.execute(
-                """
-                SELECT thread_id, recruiter_id, starttime, role_type, region, ingame_name
-                FROM entries 
-                WHERE endtime <= ? AND reminder_sent = 0
-                """,
-                (now.isoformat(),)
-            )
-            expired_entries = cursor.fetchall()
-            for thread_id, recruiter_id, starttime, role_type, region, ingame_name in expired_entries:
-                thread = self.bot.get_channel(int(thread_id)) if str(thread_id).isdigit() else None
-                if thread and isinstance(thread, discord.Thread):
-                    try:
-                        start_time = datetime.fromisoformat(starttime)
-                    except ValueError:
-                        log(f"Error parsing starttime: {starttime}", level="error")
-                        continue
-                    days_open = (now - start_time).days
+            cursor.execute("""
+                SELECT thread_id, recruiter_id, starttime, endtime, role_type, region, ingame_name
+                FROM entries
+                WHERE reminder_sent = 0
+            """)
+            rows = cursor.fetchall()
+
+            for thread_id, recruiter_id, start_iso, end_iso, role_type, region, ign in rows:
+                if not end_iso:
+                    continue
+
+                # Parse the ISO timestamp (including microseconds)
+                end_dt = datetime.fromisoformat(end_iso)
+                if end_dt <= now:
+                    # Calculate days open if needed
+                    start_dt = datetime.fromisoformat(start_iso)
+                    days_open = (now - start_dt).days
+
+                    # Build and send your embed
                     embed = discord.Embed(
                         description=f"**Reminder:** This thread has been open for **{days_open} days**.",
                         color=0x008040
                     )
-                    if role_type == "trainee":
-                        recruiter = self.bot.get_user(int(recruiter_id))
-                        if recruiter:
+                    thread = self.bot.get_channel(int(thread_id))
+                    if thread and isinstance(thread, discord.Thread):
+                        if role_type == "trainee":
                             await thread.send(f"<@{recruiter_id}>", embed=embed)
-                        else:
-                            await thread.send(embed=embed)
-                    elif role_type == "cadet":
-                        voting_embed = await create_voting_embed(start_time, now, int(recruiter_id), region, ingame_name)
-                        await thread.send(f"<@&{SWAT_ROLE_ID}> It's time for another cadet voting!⌛")
-                        msg = await thread.send(embed=voting_embed)
-                        await msg.add_reaction(PLUS_ONE_EMOJI)
-                        await msg.add_reaction("❔")
-                        await msg.add_reaction(MINUS_ONE_EMOJI)
-                    cursor.execute("UPDATE entries SET reminder_sent = 1 WHERE thread_id = ?", (thread_id,))
+                        else:  # cadet
+                            voting_embed = await create_voting_embed(start_dt, now, int(recruiter_id), region, ign)
+                            await thread.send(f"<@&{SWAT_ROLE_ID}> Time for another cadet vote!⌛")
+                            msg = await thread.send(embed=voting_embed)
+                            await msg.add_reaction(PLUS_ONE_EMOJI)
+                            await msg.add_reaction("❔")
+                            await msg.add_reaction(MINUS_ONE_EMOJI)
+
+                    # Mark reminder sent
+                    cursor.execute(
+                        "UPDATE entries SET reminder_sent = 1 WHERE thread_id = ?",
+                        (thread_id,)
+                    )
                     conn.commit()
-                else:
-                    log(f"Thread with ID {thread_id} not found or invalid.", level="error")
+
         except sqlite3.Error as e:
             log(f"Database error in check_expired_endtimes_task: {e}", level="error")
-        except Exception as e:
-            log(f"Error in check_expired_endtimes_task: {e}", level="error")
         finally:
-            if conn:
-                conn.close()
+            conn.close()
 
     async def load_existing_tickets(self):
         # For recruitment, if you need to load active requests, do so here.
@@ -1910,6 +1900,13 @@ class RecruitmentCog(commands.Cog):
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.response.send_message("❌ This command must be used inside a thread.", ephemeral=True)
             return
+        
+        # Check if the user issuing command is a Recruiter
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
+            return
+        
         # Ensure the thread is a trainee or cadet notes thread.
         if interaction.channel.parent_id not in [TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL]:
             await interaction.response.send_message("❌ This command can only be used in a trainee or cadet notes thread.", ephemeral=True)
@@ -2283,6 +2280,7 @@ class RecruitmentCog(commands.Cog):
         embed.add_field(name="Join Reason", value=app_data["join_reason"], inline=False)
         embed.add_field(name="Previous Crews", value=app_data["previous_crews"], inline=False)
         embed.add_field(name="Closed?", value=("Yes" if app_data["is_closed"] else "No"), inline=False)
+        embed.add_field(name="Silenced?", value=("Yes" if app_data["silenced"] else "No"), inline=False)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -2293,9 +2291,17 @@ class RecruitmentCog(commands.Cog):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ Wrong guild!", ephemeral=True)
             return
+        
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.response.send_message("❌ Must be used in a thread!", ephemeral=True)
             return
+
+        # Check if the user issuing command is a Recruiter
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
+            return
+
 
         app_data = get_application(str(interaction.channel.id))
         if not app_data:
@@ -2377,6 +2383,12 @@ class RecruitmentCog(commands.Cog):
             await interaction.followup.send("❌ Must be used in a thread!", ephemeral=True)
             return
 
+        # Check if the user issuing command is a Recruiter
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
+            return
+
         app_data = get_application(str(interaction.channel.id))
         if not app_data:
             await interaction.followup.send("❌ No application data found for this thread!", ephemeral=True)
@@ -2384,12 +2396,6 @@ class RecruitmentCog(commands.Cog):
 
         if app_data["is_closed"] == 1:
             await interaction.followup.send("❌ This application is already closed!", ephemeral=True)
-            return
-
-        # Check if the user issuing command is a Recruiter
-        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
-        if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
             return
 
         # If the application is not claimed, automatically claim it:
@@ -2543,6 +2549,12 @@ class RecruitmentCog(commands.Cog):
             await interaction.followup.send("❌ Must be used in a thread!", ephemeral=True)
             return
 
+        # Check if the user issuing command is a Recruiter
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
+            return
+
         app_data = get_application(str(interaction.channel.id))
         if not app_data:
             await interaction.followup.send("❌ No application data found for this thread!", ephemeral=True)
@@ -2550,12 +2562,6 @@ class RecruitmentCog(commands.Cog):
 
         if app_data["is_closed"] == 1:
             await interaction.followup.send("❌ This application is already closed!", ephemeral=True)
-            return
-
-        # Check if the user issuing command is a Recruiter
-        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
-        if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
             return
 
         # If the application is not claimed, automatically claim it:
@@ -2696,6 +2702,12 @@ class RecruitmentCog(commands.Cog):
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.followup.send("❌ Must be used inside a thread!", ephemeral=True)
             return
+        # Check if the user issuing command is a Recruiter
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
+            return
+
         app_data = get_application(str(interaction.channel.id))
         if not app_data:
             await interaction.followup.send("❌ No application data found for this thread!", ephemeral=True)
@@ -2822,45 +2834,78 @@ class RecruitmentCog(commands.Cog):
             await interaction.response.send_message("❌ Failed to update recruiter in DB!", ephemeral=True)
 
 
-    @app_commands.command(name="blacklist", description="Manually blacklist a user by their USERID.")
+    @app_commands.command(
+        name="blacklist",
+        description="Manually blacklist a user by mention or by user ID."
+    )
+    @app_commands.describe(
+        target="The user to blacklist (mention)",
+        user_id="The user ID to blacklist"
+    )
     @handle_interaction_errors
-    async def blacklist_command(self, interaction: discord.Interaction, user_id: str):
-        guild = interaction.guild
-        if not guild:
-            await interaction.response.send_message("Guild not found.", ephemeral=True)
-            return
-        member = guild.get_member(int(user_id))
-        # If the member is not in the guild, attempt to fetch the user for logging purposes.
-        if not member:
-            try:
-                user = await self.bot.fetch_user(int(user_id))
-                log(f"User {user_id} not in guild. Proceeding with blacklist record only.", level="warning")
-            except Exception as e:
-                log(f"Error fetching user {user_id}: {e}", level="error")
-                await interaction.response.send_message("User not found.", ephemeral=True)
-                return
+    async def blacklist_command(
+        self,
+        interaction: discord.Interaction,
+        target: discord.Member = None,
+        user_id: str = None
+    ):
+        # exactly one of target or user_id must be provided
+        if (target is None and user_id is None) or (target is not None and user_id is not None):
+            return await interaction.response.send_message(
+                "❌ Please specify exactly one of `target` (mention) or `user_id`.",
+                ephemeral=True
+            )
 
-        add_timeout_record(user_id, "blacklist")
-        if member:
-            blacklist_role = guild.get_role(BLACKLISTED_ROLE_ID)
-            if blacklist_role and blacklist_role not in member.roles:
-                try:
-                    await member.add_roles(blacklist_role)
-                except Exception as e:
-                    log(f"Error assigning blacklist role to {user_id}: {e}", level="error")
-        log(f"User {user_id} has been blacklisted.")
-        create_user_activity_log_embed("recruitment", "Blacklist User", interaction.user,
-                                    f"User {user_id} has been blacklisted.")
+        # resolve member_id and optional Member object
+        if target:
+            member_id = target.id
+            member_obj = target
+        else:
+            try:
+                member_id = int(user_id)
+            except ValueError:
+                return await interaction.response.send_message(
+                    "❌ `user_id` must be a valid integer.",
+                    ephemeral=True
+                )
+            member_obj = interaction.guild.get_member(member_id)
+
+        # permission check
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            return await interaction.response.send_message(
+                "❌ You do not have permission to blacklist users.",
+                ephemeral=True
+            )
+
+        # apply blacklist in your DB
+        add_timeout_record(str(member_id), "blacklist")
+
+        # if they’re still in guild, add the Discord role
+        if member_obj:
+            blacklist_role = interaction.guild.get_role(BLACKLISTED_ROLE_ID)
+            if blacklist_role and blacklist_role not in member_obj.roles:
+                await member_obj.add_roles(blacklist_role)
+
+        log(f"User {member_id} has been blacklisted.")
         embed = discord.Embed(
             title="User Blacklisted",
-            description=f"User <@{user_id}> has been blacklisted.",
+            description=f"<@{member_id}> has been blacklisted.",
             colour=discord.Colour.red()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
+
     @app_commands.command(name="show_blacklists", description="Lists all active blacklists and timeouts.")
     @handle_interaction_errors
     async def show_blacklists(self, interaction: discord.Interaction):
+        # Check if the user issuing command is a Recruiter
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
+            return
+        
         records = get_all_timeouts()
         if not records:
             await interaction.response.send_message("No active blacklists or timeouts.", ephemeral=True)
@@ -2875,97 +2920,220 @@ class RecruitmentCog(commands.Cog):
         reply = "\n".join(lines)
         await interaction.response.send_message(f"**Active Blacklists/Timeouts:**\n{reply}", ephemeral=True)
 
-    @app_commands.command(name="remove_restriction", description="Removes the blacklist/timeout from a user by their USERID.")
+    @app_commands.command(
+        name="remove_restriction",
+        description="Remove blacklist/timeout from a user by mention or by user ID."
+    )
+    @app_commands.describe(
+        target="The user to un-restrict (mention)",
+        user_id="The user ID to un-restrict"
+    )
     @handle_interaction_errors
-    async def remove_restriction_command(self, interaction: discord.Interaction, user_id: str):
-        guild = interaction.guild
-        if not guild:
-            await interaction.response.send_message("Guild not found.", ephemeral=True)
-            return
-        member = guild.get_member(int(user_id))
-        if not member:
-            await interaction.response.send_message("User not found in the guild.", ephemeral=True)
-            return
-        removed = remove_timeout_record(user_id)
-        if removed:
-            # Remove roles if the member still has them.
-            timeout_role = guild.get_role(TIMEOUT_ROLE_ID)
-            blacklist_role = guild.get_role(BLACKLISTED_ROLE_ID)
-            try:
-                if timeout_role and timeout_role in member.roles:
-                    await member.remove_roles(timeout_role)
-                if blacklist_role and blacklist_role in member.roles:
-                    await member.remove_roles(blacklist_role)
-            except Exception as e:
-                log(f"Error removing roles from user {user_id}: {e}", level="error")
-            log(f"User {user_id} has been removed from blacklist/timeout.", level="info")
-            create_user_activity_log_embed("recruitment", f"Remove Timeout/Blacklist", interaction.user, f"User has removed timeout/blacklist from <@{user_id}>")
-            embed = discord.Embed(
-                title="Restriction Removed",
-                description=f"Timeout/blacklist removed from user <@{user_id}>.",
-                colour=discord.Colour.green()
+    async def remove_restriction_command(
+        self,
+        interaction: discord.Interaction,
+        target: discord.Member = None,
+        user_id: str = None
+    ):
+        # exactly one of target or user_id must be provided
+        if (target is None and user_id is None) or (target is not None and user_id is not None):
+            return await interaction.response.send_message(
+                "❌ Please specify exactly one of `target` (mention) or `user_id`.",
+                ephemeral=True
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        # resolve member_id and optional Member object
+        if target:
+            member_id = target.id
+            member_obj = target
         else:
-            embed = discord.Embed(
-                title="No Restriction Found",
-                description="No timeout/blacklist record found for that user.",
-                colour=discord.Colour.orange()
+            try:
+                member_id = int(user_id)
+            except ValueError:
+                return await interaction.response.send_message(
+                    "❌ `user_id` must be a valid integer.",
+                    ephemeral=True
+                )
+            member_obj = interaction.guild.get_member(member_id)
+
+        # permission check
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            return await interaction.response.send_message(
+                "❌ You do not have permission to remove restrictions.",
+                ephemeral=True
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        # remove from your DB
+        removed = remove_timeout_record(str(member_id))
+        if not removed:
+            return await interaction.response.send_message(
+                "❌ No active blacklist or timeout found for that user.",
+                ephemeral=True
+            )
+
+        # clean up Discord roles if they’re still here
+        timeout_role   = interaction.guild.get_role(TIMEOUT_ROLE_ID)
+        blacklist_role = interaction.guild.get_role(BLACKLISTED_ROLE_ID)
+        if member_obj:
+            roles_to_strip = []
+            if timeout_role   and timeout_role   in member_obj.roles: roles_to_strip.append(timeout_role)
+            if blacklist_role and blacklist_role in member_obj.roles: roles_to_strip.append(blacklist_role)
+            if roles_to_strip:
+                try:
+                    await member_obj.remove_roles(*roles_to_strip)
+                except discord.Forbidden:
+                    pass  # ignore missing perms
+
+        log(f"User {member_id} restriction removed.", level="info")
+        embed = discord.Embed(
+            title="Restriction Removed",
+            description=f"Blacklist/timeout removed from <@{member_id}>.",
+            colour=discord.Colour.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 #
 # Toggle Application Status Command
 #
 
-    @app_commands.command(name="toggle_applications", description="Toggle applications for a region as OPEN or CLOSED.")
+
+    @app_commands.command(
+        name="toggle_applications",
+        description="Toggle applications for a region as OPEN or CLOSED."
+    )
     @app_commands.describe(
         region="Select a region",
         status="Select the new status"
     )
     @app_commands.choices(
         region=[
-            app_commands.Choice(name="EU", value="EU"),
+            app_commands.Choice(name="EU",  value="EU"),
             app_commands.Choice(name="NA", value="NA"),
-            app_commands.Choice(name="SEA", value="SEA")
+            app_commands.Choice(name="SEA", value="SEA"),
         ],
         status=[
-            app_commands.Choice(name="Open", value="OPEN"),
-            app_commands.Choice(name="Closed", value="CLOSED")
+            app_commands.Choice(name="Open",   value="OPEN"),
+            app_commands.Choice(name="Closed", value="CLOSED"),
         ]
-)
+    )
     @handle_interaction_errors
-    async def toggle_applications(self, interaction: discord.Interaction, region: str = "EU", status: str = "OPEN"):
-        # Since region and status are strings, just convert them to uppercase for consistency.
-        region_val = region.upper()   # e.g. "EU", "NA", or "SEA"
-        status_val = status.upper()     # "OPEN" or "CLOSED"
+    async def toggle_applications(
+        self,
+        interaction: discord.Interaction,
+        region: str = "EU",
+        status: str = "OPEN"
+    ):
+        # Immediately defer so we can take our time
+        await interaction.response.defer(ephemeral=True)
 
-        # Update the region status in the database
-        if update_region_status(region_val, status_val):
-            # Re-create the application embed with updated statuses
-            new_embed = create_application_embed()
-            
-            # Get the channel where the application embed is posted
-            channel = self.bot.get_channel(APPLY_CHANNEL_ID)
-            try:
-                # Fetch the existing embed message using its stored ID
-                msg = await channel.fetch_message(application_embed_message_id)
-                # Edit the embed to show the new statuses
-                await msg.edit(embed=new_embed)
-            except Exception as e:
-                log(f"Error editing application embed: {e}", level="error")
-            
-            activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
-            if activity_channel:
-                embed = create_user_activity_log_embed("recruitment", f"Application Status Change", interaction.user, f"User has changed {region_val} to {status_val}")
-                await activity_channel.send(embed=embed)
-            
-            await interaction.response.send_message(
-                f"Applications for **{region_val}** have been set to **{status_val}**.", ephemeral=True
+        # 1) Permission check
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            return await interaction.followup.send(
+                "❌ You do not have permission to toggle applications.",
+                ephemeral=True
             )
-        else:
-            await interaction.response.send_message("Failed to update region status.", ephemeral=True)
+
+        region_val = region.upper()   # "EU", "NA", "SEA"
+        status_val = status.upper()   # "OPEN" or "CLOSED"
+
+        # 2) Update local DB
+        if not update_region_status(region_val, status_val):
+            return await interaction.followup.send(
+                "❌ Failed to update region status in the database.",
+                ephemeral=True
+            )
+
+        # 3) Refresh the local embed
+        new_embed = create_application_embed()
+        channel   = self.bot.get_channel(APPLY_CHANNEL_ID)
+        try:
+            msg = await channel.fetch_message(application_embed_message_id)
+            await msg.edit(embed=new_embed)
+        except Exception as e:
+            log(f"Error editing local application embed: {e}", level="error")
+
+        # 4) Log locally
+        activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+        if activity_channel:
+            log_embed = create_user_activity_log_embed(
+                "recruitment",
+                "Application Status Change",
+                interaction.user,
+                f"{region_val} → {status_val}"
+            )
+            await activity_channel.send(embed=log_embed)
+
+        # 5) Read API token
+        try:
+            with open(SWAT_WEBSITE_TOKEN_FILE, "r") as f:
+                website_api_token = f.read().strip()
+        except Exception as e:
+            log(f"Failed to read API token file '{SWAT_WEBSITE_TOKEN_FILE}': {e}", level="error")
+            return await interaction.followup.send(
+                "❌ Internal error reading API token.",
+                ephemeral=True
+            )
+
+        # 6) Call external API with correct header name
+        url     = f"{SWAT_WEBSITE_URL}/api/application/status"
+        payload = {"server": region_val.lower(), "status": status_val.lower()}
+        headers = {
+            "X-Api-Token":    website_api_token,
+            "Content-Type":   "application/json",
+            "User-Agent":     (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/114.0.0.0 Safari/537.36"
+            ),
+            "Accept":         "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language":"en-US,en;q=0.9",
+        }
+
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            resp.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            body = getattr(e.response, "text", "")
+            log(f"API HTTP error {e.response.status_code}", level="error")
+            return await interaction.followup.send(
+                f"⚠ Website API returned {e.response.status_code} -> Data not updated",
+                ephemeral=True
+            )
+        except requests.exceptions.RequestException as e:
+            log(f"Error calling external API: {e}", level="error")
+            return await interaction.followup.send(
+                "⚠ Could not reach website application API.",
+                ephemeral=True
+            )
+
+        # 7) Parse JSON
+        try:
+            data = resp.json()
+        except ValueError:
+            log(f"Invalid JSON from API: {resp.text}", level="error")
+            return await interaction.followup.send(
+                "⚠ Received invalid response from website API.",
+                ephemeral=True
+            )
+
+        if not data.get("success"):
+            err = data.get("error", "Unknown error")
+            log(f"External API error response: {err}", level="error")
+            return await interaction.followup.send(
+                f"⚠ API error: {err}",
+                ephemeral=True
+            )
+
+        log(f"External API status update succeeded: {region_val}→{status_val}", level="info")
+
+        # 8) Final confirmation
+        await interaction.followup.send(
+            f"✅ Applications for **{region_val}** set to **{status_val}**.",
+            ephemeral=True
+        )
 
     @app_commands.command(name="app_stats", description="Show application statistics.")
     @handle_interaction_errors
@@ -2990,67 +3158,91 @@ class RecruitmentCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-    @app_commands.command(name="app_history", description="Show all application attempts for a user.")
+    @app_commands.command(
+        name="app_history",
+        description="Show all application attempts for a user (by mention or by user ID)."
+    )
+    @app_commands.describe(
+        target="The user to look up (mention)",
+        user_id="The user ID to look up"
+    )
     @handle_interaction_errors
-    async def app_history(self, interaction: discord.Interaction, user_id: str):
+    async def app_history(
+        self,
+        interaction: discord.Interaction,
+        target: discord.User = None,
+        user_id: str = None
+    ):
+        # Must supply exactly one
+        if (target is None and user_id is None) or (target is not None and user_id is not None):
+            return await interaction.response.send_message(
+                "❌ Please specify **exactly one** of `target` (mention) or `user_id`.",
+                ephemeral=True
+            )
+
+        # Resolve the numeric ID
+        if target:
+            lookup_id = target.id
+        else:
+            try:
+                lookup_id = int(user_id)
+            except ValueError:
+                return await interaction.response.send_message(
+                    "❌ `user_id` must be a valid integer.",
+                    ephemeral=True
+                )
+
+        # Permission check: only recruiters/leadership
         guild = interaction.client.get_guild(GUILD_ID)
         recruiter_role = guild.get_role(RECRUITER_ID) if guild else None
         if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
-            return
-
-        history = get_application_history(user_id)
-        if not history:
-            await interaction.response.send_message("No application history found for this user.", ephemeral=True)
-            return
-
-        lines = []
-        # Define emoji mappings for each type and status.
-        type_emojis = {
-            "submission": "📥",
-            "attempt": "🔍"
-        }
-        status_emojis = {
-            "accepted": "✅",
-            "denied": "❌",
-            "withdrawn": "⚠️",
-            "open": "🟢"
-        }
-        
-        # Build the history lines.
-        for entry in history:
-            try:
-                dt = datetime.fromisoformat(entry['timestamp'])
-                formatted_time = dt.strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                formatted_time = entry['timestamp']
-
-            type_emoji = type_emojis.get(entry["type"], "")
-            status_emoji = status_emojis.get(entry["status"].lower(), "")
-            line = (
-                f"{type_emoji} **{formatted_time}**\n"
-                f"Type: *{entry['type'].capitalize()}*  |  Status: {status_emoji} **{entry['status'].capitalize()}**\n"
-                f"Details: {entry['details']}\n"
-                "────────────────────────"
+            return await interaction.response.send_message(
+                "❌ You do not have permission to use this command.",
+                ephemeral=True
             )
-            lines.append(line)
-        
-        # Join all lines into a single string.
-        description = "\n".join(lines)
 
-        # Truncate if description is too long.
-        if len(description) > 4096:
-            description = description[:4093] + "..."
+        # Fetch history
+        history = get_application_history(str(lookup_id))
+        if not history:
+            return await interaction.response.send_message(
+                f"No application history found for <@{lookup_id}>.",
+                ephemeral=True
+            )
+
+        # Build the embed
+        lines = []
+        type_emojis = {"submission": "📥", "attempt": "🔍"}
+        status_emojis = {"accepted": "✅", "denied": "❌", "withdrawn": "⚠️", "open": "🟢"}
+
+        for entry in history:
+            # format timestamp
+            try:
+                dt = datetime.fromisoformat(entry["timestamp"])
+                ts = dt.strftime("%Y-%m-%d %H:%M")
+            except:
+                ts = entry["timestamp"]
+            t_emoji = type_emojis.get(entry["type"], "")
+            s_emoji = status_emojis.get(entry["status"].lower(), "")
+            lines.append(
+                f"{t_emoji} **{ts}**\n"
+                f"Type: *{entry['type'].capitalize()}* | Status: {s_emoji} **{entry['status'].capitalize()}**\n"
+                f"Details: {entry['details']}\n"
+                "────────────────────"
+            )
+
+        desc = "\n".join(lines)
+        if len(desc) > 4096:
+            desc = desc[:4093] + "..."
 
         embed = discord.Embed(
-            title=f"📜 Application History for {user_id}",
-            description=description,
+            title=f"📜 Application History for <@{lookup_id}>",
+            description=desc,
             color=discord.Color.green()
         )
-        embed.set_footer(text="Note: Timestamps are in local time (YYYY-MM-DD HH:MM).")
-        
-        # Send the embed once, after the loop.
+        embed.set_footer(text="Timestamps are local (YYYY-MM-DD HH:MM)")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 
     @app_commands.command(name="app_silence", description="Toggle silence for notifications in this application thread.")
     @handle_interaction_errors
@@ -3061,6 +3253,12 @@ class RecruitmentCog(commands.Cog):
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.response.send_message("❌ This command must be used in an application thread.", ephemeral=True)
             return
+    
+        # Check if the user has the Recruiter role
+        recruiter_role = interaction.guild.get_role(RECRUITER_ID)
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ You do not have permission to toggle silence.", ephemeral=True)
+            return
 
         thread_id = str(interaction.channel.id)
         # Check current silence status
@@ -3070,9 +3268,11 @@ class RecruitmentCog(commands.Cog):
         result = set_application_silence(thread_id, new_state)
         if result:
             if new_state:
-                await interaction.response.send_message("🔇 Notifications have been silenced for this application thread.", ephemeral=True)
+                embed = discord.Embed(title="🔇 Notifications have been silenced for this application thread.", colour=0xc0c0c0)
+                await interaction.response.send_message(embed=embed, ephemeral=False)
             else:
-                await interaction.response.send_message("🔊 Notifications have been resumed for this application thread.", ephemeral=True)
+                embed = discord.Embed(title="🔊 Notifications have been resumed for this application thread.", colour=0xc0c0c0)
+                await interaction.response.send_message(embed=embed, ephemeral=False)
         else:
             await interaction.response.send_message("❌ Failed to update the silence status.", ephemeral=True)
 

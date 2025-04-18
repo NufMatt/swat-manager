@@ -478,7 +478,7 @@ def get_application(thread_id: str) -> Optional[Dict]:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT applicant_id, recruiter_id, starttime, ingame_name, region, age, level, join_reason, previous_crews, is_closed
+                SELECT applicant_id, recruiter_id, starttime, ingame_name, region, age, level, join_reason, previous_crews, is_closed, silenced
                 FROM application_threads
                 WHERE thread_id = ?
                 """,
@@ -498,7 +498,8 @@ def get_application(thread_id: str) -> Optional[Dict]:
                 "level": row[6],
                 "join_reason": row[7],
                 "previous_crews": row[8],
-                "is_closed": row[9]
+                "is_closed": row[9],
+                "silenced": row[10]
             }
     except sqlite3.Error as e:
         log(f"Database Error (get_application): {e}", level="error")
