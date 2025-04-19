@@ -324,6 +324,9 @@ class RoleRequestView(discord.ui.View):
     @discord.ui.button(label="Request Other", style=discord.ButtonStyle.secondary, custom_id="request_other")
     async def request_other(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id_str = str(interaction.user.id)
+        if not is_in_correct_guild(interaction):
+            return await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+
         if get_role_request(user_id_str):  # DB lookup for pending request  # DB lookup for pending request
             await interaction.response.send_message("❌ You already have an open request.", ephemeral=True)
             return
@@ -1518,7 +1521,7 @@ class RecruitmentCog(commands.Cog):
                         await thread.send(content=content, embed=embed)
                     except Exception as e:
                         log(f"Error sending reminder in accepted thread {thread_id}: {e}", level="error")
-                    # Log the event for accepted threads (
+                    # Log the event for accepted threads
 
 
     @app_commands.command(name="hello", description="Say hello to the bot")
@@ -2854,6 +2857,10 @@ class RecruitmentCog(commands.Cog):
         lines = []
         for rec in records:
             if rec["type"] == "timeout":
+                expires_at = rec["expires_at"]
+                if isinstance(expires_at, str):
+                    expires_at = datetime.fromisoformat(expires_at)
+                exp_text = expires_at.strftime("%Y‑%m‑%d %H:%M")
                 exp_text = rec["expires_at"].strftime("%Y-%m-%d %H:%M") if rec["expires_at"] else "N/A"
                 lines.append(f"User ID: {rec['user_id']} | Timeout until: {exp_text}")
             else:
