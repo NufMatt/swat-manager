@@ -2860,9 +2860,9 @@ class RecruitmentCog(commands.Cog):
                 expires_at = rec["expires_at"]
                 if isinstance(expires_at, str):
                     expires_at = datetime.fromisoformat(expires_at)
-                exp_text = expires_at.strftime("%Y‑%m‑%d %H:%M")
-                exp_text = rec["expires_at"].strftime("%Y-%m-%d %H:%M") if rec["expires_at"] else "N/A"
+                exp_text = expires_at.strftime("%Y-%m-%d %H:%M") if expires_at else "N/A"
                 lines.append(f"User ID: {rec['user_id']} | Timeout until: {exp_text}")
+
             else:
                 lines.append(f"User ID: {rec['user_id']} | Blacklisted")
         reply = "\n".join(lines)
