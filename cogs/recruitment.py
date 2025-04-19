@@ -444,7 +444,7 @@ class RequestActionView(discord.ui.View):
 
             # Remove it from the pending list in the database.
             if not remove_role_request(str(original_user_id)):
-                await interaction.followup.send("⚠ Warning: Could not remove the request from the database.", ephemeral=True)
+                await interaction.response.send_message("⚠ Warning: Could not remove the request from the database.", ephemeral=True)
 
             # DM the user about the acceptance.
             user = interaction.client.get_user(int(original_user_id))
@@ -1917,7 +1917,7 @@ class RecruitmentCog(commands.Cog):
         # Check if the user issuing command is a Recruiter
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
         if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
+            await interaction.response.send_message("❌ You do not have permission to accept this application.", ephemeral=True)
             return
         
         # Ensure the thread is a trainee or cadet notes thread.
@@ -2312,7 +2312,7 @@ class RecruitmentCog(commands.Cog):
         # Check if the user issuing command is a Recruiter
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
         if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
+            await interaction.response.send_message("❌ You do not have permission to accept this application.", ephemeral=True)
             return
 
 
@@ -2715,6 +2715,7 @@ class RecruitmentCog(commands.Cog):
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.followup.send("❌ Must be used inside a thread!", ephemeral=True)
             return
+        
         # Check if the user issuing command is a Recruiter
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
         if not recruiter_role or recruiter_role not in interaction.user.roles:
@@ -2917,7 +2918,7 @@ class RecruitmentCog(commands.Cog):
         # Check if the user issuing command is a Recruiter
         recruiter_role = interaction.guild.get_role(RECRUITER_ID)
         if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
+            await interaction.response.send_message("❌ You do not have permission to accept this application.", ephemeral=True)
             return
         
         records = get_all_timeouts()
