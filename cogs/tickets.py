@@ -5,11 +5,7 @@ from discord import app_commands, ButtonStyle
 from discord.ext import commands, tasks
 import asyncio, os, json, sqlite3, re, traceback
 from datetime import datetime, timedelta
-from config_testing import (
-    GUILD_ID, TICKET_CHANNEL_ID, TOKEN_FILE,
-    LEADERSHIP_ID, RECRUITER_ID, LEAD_BOT_DEVELOPER_ID, SWAT_ROLE_ID,
-    RECRUITER_EMOJI, LEADERSHIP_EMOJI, LEAD_BOT_DEVELOPER_EMOJI, ACTIVITY_CHANNEL_ID
-)
+from config import *
 from messages import OPEN_TICKET_EMBED_TEXT
 from cogs.helpers import log, create_user_activity_log_embed, get_stored_embed, set_stored_embed
 
@@ -669,7 +665,7 @@ class TicketCog(commands.Cog):
     # LOA Expiration Background Task
     # -------------------------------
 
-    @tasks.loop(minutes=1)  # adjust frequency for production
+    @tasks.loop(hours=1)
     async def loa_reminder_task(self):
         await self.bot.wait_until_ready()
         expired = get_expired_loa()

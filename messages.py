@@ -39,6 +39,10 @@ If you're **ever in need of any help**, reach out to any **S.W.A.T Member** or *
 
 Now go represent SWAT with pride! 🚀
 
+"""
+
+# Add Onboarding feedback later
+"""
 https://www.cnrswat.com/onboardingfeedback
 Password: Trainee2024
 Please fill this feedback form to help us improve our onboarding stage for other recruits!
@@ -190,3 +194,5 @@ ROLE_REQUEST_MESSAGE = """
 
 ⚠️ **Important:** Follow the instructions carefully to avoid delays. Let’s get you set up and ready to roll! 🚀
 """
+
+FEEDBACK_FORM_LINK = ""

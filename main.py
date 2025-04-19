@@ -2,7 +2,7 @@ import discord
 from discord import app_commands, ButtonStyle, Interaction
 from discord.ext import commands, tasks
 import asyncio
-from config_testing import TOKEN_FILE
+from config import TOKEN_FILE
 from cogs.helpers import *
 import os, threading
 from sqlite_web.sqlite_web import initialize_app, app

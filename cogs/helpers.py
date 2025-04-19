@@ -1,5 +1,5 @@
 import discord
-from config_testing import *
+from config import *
 import logging
 import inspect
 from datetime import datetime

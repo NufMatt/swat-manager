@@ -7,7 +7,7 @@ from cogs.helpers import create_user_activity_log_embed
 # Adjust path so that modules in the parent directory can be found
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Import configuration settings
-from config_testing import GUILD_ID, VERIFIED_ROLE, GUEST_ROLE, CHECK_CNR_VERIFIED_ROLE, CNR_ID, ACTIVITY_CHANNEL_ID
+from config import GUILD_ID, VERIFIED_ROLE, GUEST_ROLE, CHECK_CNR_VERIFIED_ROLE, CNR_ID, ACTIVITY_CHANNEL_ID
 
 try:
     with open("account_token.txt", "r") as f:

@@ -5,12 +5,7 @@ from discord.ext import tasks, commands
 import requests, json, asyncio, aiohttp, re, pytz, sqlite3
 from datetime import datetime, timedelta
 import io
-from config_testing import (
-    USE_LOCAL_JSON, LOCAL_JSON_FILE, CHECK_INTERVAL, CACHE_UPDATE_INTERVAL,
-    API_URLS, API_URLS_FIVEM, STATUS_CHANNEL_ID, GUILD_ID, MENTOR_ROLE_ID,
-    CADET_ROLE, TRAINEE_ROLE, SWAT_ROLE_ID, RANK_HIERARCHY, ROLE_TO_RANK, EMBEDS_FILE, LEADERSHIP_ID, LEADERSHIP_EMOJI,
-    SWAT_LOGO_EMOJI, MENTOR_EMOJI, TRAINEE_EMOJI, CADET_EMOJI, SWAT_WEBSITE_URL, SWAT_WEBSITE_TOKEN_FILE
-)
+from config import *
 from cogs.helpers import log, set_stored_embed, get_stored_embed
 
 
@@ -175,7 +170,7 @@ class PlayerListCog(commands.Cog):
                 last_heartbeat = datetime.fromisoformat(
                     queue_data[region]["LastHeartbeatDateTime"].replace("Z", "+00:00")
                 )
-                if datetime.now(pytz.UTC) - last_heartbeat > timedelta(minutes=10):
+                if datetime.now(pytz.UTC) - last_heartbeat > timedelta(minutes=1):
                     offline = True
                     embed_color = 0xf40006
             except Exception as e:

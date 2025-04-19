@@ -15,16 +15,9 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from config_testing import (
-    GUILD_ID, TRAINEE_NOTES_CHANNEL, CADET_NOTES_CHANNEL, TRAINEE_CHAT_CHANNEL,
-    SWAT_CHAT_CHANNEL, TRAINEE_ROLE, CADET_ROLE, SWAT_ROLE_ID, OFFICER_ROLE_ID,
-    RECRUITER_ID, LEADERSHIP_ID, EU_ROLE_ID, NA_ROLE_ID, SEA_ROLE_ID,
-    TARGET_CHANNEL_ID, REQUESTS_CHANNEL_ID, TICKET_CHANNEL_ID, TOKEN_FILE,
-    PLUS_ONE_EMOJI, MINUS_ONE_EMOJI, LEAD_BOT_DEVELOPER_ID, LEAD_BOT_DEVELOPER_EMOJI,
-    INTEGRATIONS_MANAGER, RECRUITER_EMOJI, LEADERSHIP_EMOJI, APPLICATION_EMBED_ID_FILE, APPLY_CHANNEL_ID, ACTIVITY_CHANNEL_ID,
-    TIMEOUT_ROLE_ID, BLACKLISTED_ROLE_ID, SWAT_WEBSITE_URL, SWAT_WEBSITE_TOKEN_FILE
-)
-from messages import trainee_messages, cadet_messages, welcome_to_swat, OPEN_TICKET_EMBED_TEXT, RECRUITMENT_MESSAGE, ROLE_REQUEST_MESSAGE
+from config import *
+
+from messages import *
 from cogs.helpers import *
 from cogs.db_utils import *
 
@@ -1231,7 +1224,7 @@ class RecruitmentCog(commands.Cog):
         # For recruitment, if you need to load active requests, do so here.
         pass
 
-    @tasks.loop(minutes=1)  # For testing; change timedelta(minutes=1) to timedelta(hours=24) in production
+    @tasks.loop(hours=1)
     async def check_ban_history_and_application_reminders(self):
         # Open a connection and fetch threads including the two new columns.
         conn = sqlite3.connect(DATABASE_FILE)
@@ -1248,9 +1241,8 @@ class RecruitmentCog(commands.Cog):
             self.reminder_times = {}
 
         for thread_id, applicant_id, recruiter_id, starttime, ban_history_sent, ban_history_reminder_count in rows:
-            # Skip if a reminder was sent less than 1 minute ago (for testing; use 24 hours in production)
             last_rem = self.reminder_times.get(thread_id)
-            if last_rem and (now - last_rem) < timedelta(minutes=1):
+            if last_rem and (now - last_rem) < timedelta(hours=24):
                 continue
 
             if is_application_silenced(thread_id):
@@ -1258,8 +1250,7 @@ class RecruitmentCog(commands.Cog):
                 continue  # Skip sending notifications for this thread
 
             start = datetime.fromisoformat(starttime)
-            # Only process threads that have been open long enough (1 minute for testing; use 24 hours in production)
-            if now - start > timedelta(minutes=1):
+            if now - start > timedelta(hours=24):
                 thread = self.bot.get_channel(int(thread_id))
                 if thread and isinstance(thread, discord.Thread):
                     # If the ban history has been sent, just ping recruiters.
@@ -1373,7 +1364,7 @@ class RecruitmentCog(commands.Cog):
                         log(f"Error re-adding blacklist role to user {record['user_id']}: {e}", level="error")
         log("Completed check_timeouts_task cycle.")
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(hours=1)
     async def check_open_requests_reminder(self):
         """
         Checks every 30 minutes for role requests that have been open for over 24 hours and
@@ -1388,7 +1379,7 @@ class RecruitmentCog(commands.Cog):
                 log(f"Error parsing timestamp for role request from user {req['user_id']}: {e}", level="error")
                 continue
 
-            if now - req_time > timedelta(minutes=1): #### CHANGE TIMEEDAYS TO 24 HOURS FOR PRODUCTION
+            if now - req_time > timedelta(hours=24):
                 
                 try:
                     dt = datetime.fromisoformat(req['timestamp'])
@@ -1621,10 +1612,12 @@ class RecruitmentCog(commands.Cog):
         thread = interaction.channel
         user_id_int = int(user_id)
         guild = interaction.client.get_guild(GUILD_ID)
+        
         leadership_role = guild.get_role(LEADERSHIP_ID) if guild else None
         if not leadership_role or leadership_role not in interaction.user.roles:
             await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
             return
+        
         selected_region = region.value
         selected_role = role_type.value
         start_time = get_rounded_time()
@@ -1664,8 +1657,18 @@ class RecruitmentCog(commands.Cog):
         
         guild = interaction.client.get_guild(GUILD_ID)
         leadership_role = guild.get_role(LEADERSHIP_ID) if guild else None
-        if not leadership_role or leadership_role not in interaction.user.roles:
-            await interaction.response.send_message("❌ You do not have permission to list requests.", ephemeral=True)
+        recruiter_role = guild.get_role(RECRUITER_ID) if guild else None
+
+        # If the user has neither role, deny access
+        if not (
+            (leadership_role and leadership_role in interaction.user.roles)
+            or
+            (recruiter_role and recruiter_role in interaction.user.roles)
+        ):
+            await interaction.response.send_message(
+                "❌ You do not have permission to list requests.",
+                ephemeral=True
+            )
             return
         
         await interaction.response.defer(ephemeral=True)
@@ -1713,9 +1716,19 @@ class RecruitmentCog(commands.Cog):
 
         # (Optional) Restrict this command to recruiters or leadership.
         guild = interaction.client.get_guild(GUILD_ID)
+        leadership_role = guild.get_role(LEADERSHIP_ID) if guild else None
         recruiter_role = guild.get_role(RECRUITER_ID) if guild else None
-        if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.response.send_message("❌ You do not have permission to list applications.", ephemeral=True)
+
+        # If the user has neither role, deny access
+        if not (
+            (leadership_role and leadership_role in interaction.user.roles)
+            or
+            (recruiter_role and recruiter_role in interaction.user.roles)
+        ):
+            await interaction.response.send_message(
+                "❌ You do not have permission to list requests.",
+                ephemeral=True
+            )
             return
 
         apps = get_open_applications()
@@ -2514,7 +2527,7 @@ class RecruitmentCog(commands.Cog):
         await interaction.followup.send(embed=acceptance_embed, ephemeral=False)
         
         dm_embed = discord.Embed(title=":white_check_mark: Your application as a S.W.A.T Trainee has been accepted!", description=":tada: Congratulations!\nYou’ve automatically received your Trainee role — the first step is complete!\n\n:pushpin: All additional information can be found in the #「:pushpin:」trainee-info channel.\nPlease make sure to carefully read through everything to get started on the right foot.\n\nWelcome aboard, and good luck on your journey!\n\n", colour=0x00c600)
-        dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value="We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form](https://google.de)\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
+        # dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value=f"We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form]({FEEDBACK_FORM_LINK})\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
         
         # Send a DM to the applicant
         try:
@@ -2765,7 +2778,8 @@ class RecruitmentCog(commands.Cog):
             dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are restricted from applying for {can_reapply} days. You can reapply on {expires.strftime('%d-%m-%Y')}.", inline=False)
         dm_embed.add_field(name="", value="Thank you for your interest in joining SWAT and taking the time to apply.", inline=False)
         dm_embed.add_field(name="", value="", inline=False)
-        dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value="We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form](https://google.de)\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
+        # dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value=f"We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form]({FEEDBACK_FORM_LINK})\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
+        
         try:
             await applicant_user.send(embed=dm_embed)
         except discord.Forbidden:
