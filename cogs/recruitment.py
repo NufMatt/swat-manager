@@ -257,7 +257,7 @@ class ApplicationControlView(discord.ui.View):
             return
         user_id_str = app_data["applicant_id"]
         # Instead of calling the command directly, we use its callback.
-        await cog.app_history.callback(cog, interaction, user_id_str)
+        await cog.app_history.callback(cog, interaction, None, user_id_str)
 
 
 
@@ -571,80 +571,6 @@ class RequestActionView(discord.ui.View):
             timestamp=request_data.get("timestamp")
         )
         await interaction.response.send_modal(modal)
-
-class DenyReasonModal(discord.ui.Modal):
-    def __init__(self, user_id: int, original_message: discord.Message, request_type: str = None, timestamp: str = None):
-        super().__init__(title="Denial Reason")
-        self.user_id = str(user_id)
-        self.original_message = original_message
-        self.request_type = request_type
-        self.timestamp = timestamp
-
-    reason = discord.ui.TextInput(
-        label="Reason for Denial",
-        style=discord.TextStyle.long,
-        placeholder="Explain why this request is denied...",
-        required=True
-    )
-    
-    @handle_interaction_errors
-    async def on_submit(self, interaction: discord.Interaction):
-        reason_text = self.reason.value
-        user = interaction.client.get_user(int(self.user_id))
-        dm_sent = False
-        try:
-            if self.request_type == "name_change":
-                dm_embed = discord.Embed(
-                    title="Your Name Change Request has been Denied",
-                    color=discord.Color.red()
-                )
-            elif self.request_type == "other":
-                dm_embed = discord.Embed(
-                    title="Your Other Request has been Denied",
-                    color=discord.Color.red()
-                )
-            else:
-                dm_embed = discord.Embed(
-                    title=f"Your {self.request_type.capitalize()} Request has been Denied",
-                    color=discord.Color.red()
-                )
-            dm_embed.add_field(name="Reason for Denial", value=reason_text, inline=False)
-            if self.timestamp:
-                dm_embed.add_field(name="Opened At", value=self.timestamp, inline=False)
-            await user.send(embed=dm_embed)
-            dm_sent = True
-        except discord.Forbidden:
-            dm_sent = False
-        except discord.HTTPException as e:
-            log(f"HTTP error sending DM in DenyReasonModal: {e}", level="error")
-            dm_sent = False
-
-        try:
-            if self.original_message.embeds:
-                updated_embed = self.original_message.embeds[0]
-            else:
-                updated_embed = discord.Embed(title="Denied", color=discord.Color.red())
-            updated_embed.color = discord.Color.red()
-            updated_embed.title += " (Denied with reason)"
-            updated_embed.add_field(name="Reason:", value=f"```\n{reason_text}\n```", inline=False)
-            updated_embed.add_field(name="Denied by:", value=f"<@{interaction.user.id}>", inline=False)
-            await self.original_message.edit(embed=updated_embed, view=None)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Error updating the message: {e}", ephemeral=True)
-            return
-
-        if not remove_role_request(self.user_id):
-            await interaction.followup.send("⚠ Warning: Could not remove the request from the database.", ephemeral=True)
-        
-        final_msg = (
-            "✅ Denial reason submitted. " +
-            ("User has been notified via DM." if dm_sent else "Could not DM the user (they may have DMs blocked).")
-        )
-        if not interaction.response.is_done():
-            await interaction.response.send_message(final_msg, ephemeral=True)
-        else:
-            await interaction.followup.send(final_msg, ephemeral=True)
-
 
 class DenyReasonModal(discord.ui.Modal):
     def __init__(self, user_id: int, original_message: discord.Message, request_type: str = None, timestamp: str = None):
