@@ -1,12 +1,8 @@
 ###
 token.txt
-data.db
-tickets.db
-tickets_embed.json
-requests.json
-embed.txt
-config_testing.py
 token-test.txt
+account_token.txt
+website-api-key.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
