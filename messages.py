@@ -1,3 +1,5 @@
+from config import *
+
 welcome_to_swat = """
 ## 🎉 Congratulations and Welcome to **S.W.A.T!**  
 
@@ -156,31 +158,32 @@ Need help? Choose the right department for your request:
 
 """
 
-RECRUITMENT_MESSAGE = """
-**Interested in joining S.W.A.T.?** Make sure you meet the requirements before applying:
+RECRUITMENT_MESSAGE = f"""
+**🚨 S.W.A.T. Recruitment - Application Requirements 🚨**
+Interested in joining S.W.A.T? Make sure you meet the requirements before applying:
 
-🔸 **Level 20+**
-🟢 **16+ years old**
-🎤 **Working mic & English speaker**
-🎯 **Active in events & activities**
+{TRAINEE_EMOJI} Level 20+
+{TRAINEE_EMOJI}  16+ years old
+{TRAINEE_EMOJI}  Working mic & English speaker
+{TRAINEE_EMOJI} No punishments in the last 30 days and no serious/excessive punishments overall
 
-To apply, you’ll need to fill out a form with:
-• **Ingame Name** (no former crewtags)
-• **Age**
-• **Ingame Level**
-• **Past Crews**
-• **Why you want to join**
+**To apply, you’ll need to fill out a form with:**
+• Ingame Name (no former crew-tags)
+• Age
+• In-game Level
+• Past Crews
+• Why you want to join
 
-🛑 **Lying will result in blacklist or removal from the process.**
+<a:attention:1109303395031977994>  Lying will result in a blacklist.
 
-You must also provide your **ban history**. To speed this up:
-1. Open a ticket in the **CnR Discord**
-2. Ask for your full ban history
-3. **Take a screenshot and attach it to your application**
+You must also provide your ban history. To speed this up:
+{CADET_EMOJI} Open a ticket in the CnR Discord
+{CADET_EMOJI} Ask for your **full ban history**
+{CADET_EMOJI} Take a **screenshot** and attach it to your application
 
 🚫 False info or missing ban history = instant removal.
 
-✅ A recruiter will review your application shortly after submission. Good luck! 🚔
+ A recruiter will review your application within 24 hours after ban history submission. Good luck! {SWAT_LOGO_EMOJI}
 """
 
 
