@@ -943,9 +943,10 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
 
         control_view = ApplicationControlView()
         await thread.send(
-            content=f"<@{interaction.user.id}>",
+            content=f"<@{interaction.user.id}> <@&{LEAD_BOT_DEVELOPER_ID}",
             embed=embed,
-            view=control_view
+            view=control_view,
+            silent=True
         )
         
         remove_application_request(user_id_str)
