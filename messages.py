@@ -159,7 +159,6 @@ Need help? Choose the right department for your request:
 """
 
 RECRUITMENT_MESSAGE = f"""
-**🚨 S.W.A.T. Recruitment - Application Requirements 🚨**
 Interested in joining S.W.A.T? Make sure you meet the requirements before applying:
 
 {TRAINEE_EMOJI} Level 20+
