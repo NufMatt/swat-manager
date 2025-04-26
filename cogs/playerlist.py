@@ -203,13 +203,13 @@ class PlayerListCog(commands.Cog):
                 for mp in matching_players:
                     if mp["type"] == "mentor":
                         val += f"\n - {mp['username']} (<@{mp['discord_id']}>)" if mp['discord_id'] else f"\n - {mp['username']} (❔)"
-                embed.add_field(name=f"{MENTOR_EMOJI}Mentors Online:", value=val, inline=False)
+                embed.add_field(name=f"{MENTOR_EMOJI} {mentor_count} Mentors Online:", value=val, inline=False)
             if swat_count - mentor_count > 0:
                 val = ""
                 for mp in matching_players:
                     if mp["type"] in ("SWAT", "unknown"):
                         val += f"\n - {mp['username']} (<@{mp['discord_id']}>)" if mp['discord_id'] else f"\n - {mp['username']} (❔)"
-                embed.add_field(name="SWAT Online:", value=val, inline=False)
+                embed.add_field(name=f"{SWAT_LOGO_EMOJI} {swat_count} SWAT Online:", value=val, inline=False)
             if trainee_count:
                 val = ""
                 for mp in matching_players:
@@ -217,17 +217,18 @@ class PlayerListCog(commands.Cog):
                         val += f"\n{TRAINEE_EMOJI} {mp['username']} (<@{mp['discord_id']}>)"
                     elif mp["type"] == "cadet":
                         val += f"\n{CADET_EMOJI} {mp['username']} (<@{mp['discord_id']}>)"
-                embed.add_field(name="Cadets / Trainees Online:", value=val, inline=False)
+                embed.add_field(name=f"{trainee_count} Cadets / Trainees Online:", value=val, inline=False)
+            
             if all(p["type"] not in ("SWAT", "mentor", "trainee", "cadet", "unknown") for p in matching_players):
                 embed.add_field(name="\n*Nobody is online*\n", value="", inline=False)
             if queue_data and region in queue_data:
                 p = queue_data[region]
-                embed.add_field(name=f"{SWAT_LOGO_EMOJI}SWAT:", value=f"``` {swat_count} ```", inline=True)
+                # embed.add_field(name=f"{SWAT_LOGO_EMOJI}SWAT:", value=f"``` {swat_count} ```", inline=True)
                 embed.add_field(name="🎮Players:", value=f"```{p['Players']}/{p['MaxPlayers']}```", inline=True)
                 embed.add_field(name="⌛Queue:", value=f"```{p['QueuedPlayers']}```", inline=True)
                 embed.add_field(name="", value=restart_timer, inline=False)
             else:
-                embed.add_field(name=f"{SWAT_LOGO_EMOJI}SWAT:", value=f"```{swat_count}```", inline=True)
+                # embed.add_field(name=f"{SWAT_LOGO_EMOJI}SWAT:", value=f"```{swat_count}```", inline=True)
                 embed.add_field(name="🎮Players:", value="```no data```", inline=True)
                 embed.add_field(name="⌛Queue:", value="```no data```", inline=True)
         else:
@@ -478,37 +479,38 @@ class PlayerListCog(commands.Cog):
             return
 
         # 4) fire off the POST
-        url = f"{SWAT_WEBSITE_URL}/api/players/count"
-        headers = {"X-Api-Token": api_token, "Content-Type": "application/json",
-                    "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) " 
-                    "Chrome/114.0.0.0 Safari/537.36"),
-                    "Accept": "application/json, text/javascript, */*; q=0.01",
-                    "Accept-Language": "en-US,en;q=0.9"}
-        payload = {"playerCount": str(count)}
-        log(f"Sending unique SWAT count={count} to {url}", level="info")
+        if SEND_API_DATA:
+            url = f"{SWAT_WEBSITE_URL}/api/players/count"
+            headers = {"X-Api-Token": api_token, "Content-Type": "application/json",
+                        "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) " 
+                        "Chrome/114.0.0.0 Safari/537.36"),
+                        "Accept": "application/json, text/javascript, */*; q=0.01",
+                        "Accept-Language": "en-US,en;q=0.9"}
+            payload = {"playerCount": str(count)}
+            log(f"Sending unique SWAT count={count} to {url}", level="info")
 
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=10)
-            resp.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            body = getattr(e.response, "text", "")
-            log(f"Players count API HTTP {e.response.status_code}", level="error")
-        except requests.exceptions.RequestException as e:
-            log(f"Error sending players count: {e}", level="error")
-        else:
-            # parse JSON to confirm success
             try:
-                data = resp.json()
-            except ValueError:
-                log(f"Invalid JSON from players count API: {resp.text}", level="error")
+                resp = requests.post(url, json=payload, headers=headers, timeout=10)
+                resp.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                body = getattr(e.response, "text", "")
+                log(f"Players count API HTTP {e.response.status_code}", level="error")
+            except requests.exceptions.RequestException as e:
+                log(f"Error sending players count: {e}", level="error")
             else:
-                if data.get("success"):
-                    log(f"Successfully sent unique SWAT count={count}", level="info")
+                # parse JSON to confirm success
+                try:
+                    data = resp.json()
+                except ValueError:
+                    log(f"Invalid JSON from players count API: {resp.text}", level="error")
                 else:
-                    err = data.get("error", "unknown")
-                    log(f"Players count API error response: {err}", level="error")
+                    if data.get("success"):
+                        log(f"Successfully sent unique SWAT count={count}", level="info")
+                    else:
+                        err = data.get("error", "unknown")
+                        log(f"Players count API error response: {err}", level="error")
 
 
     @commands.has_role(LEADERSHIP_ID)

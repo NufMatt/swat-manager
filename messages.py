@@ -3,7 +3,12 @@ from config import *
 welcome_to_swat = """
 ## 🎉 Congratulations and Welcome to **S.W.A.T!**  
 
-You're now a **full member** of our crew! Take a moment to review the important information below.  
+You're now a **full member** of our crew! We hope you enjoyed the process of becoming a member and would love to hear your feedback. It is very important to us ❤️ 
+
+https://www.cnrswat.com/onboardingfeedback
+Password: swatcnr2025
+
+Now please take a moment to review the important information below:
 
 ---
 
@@ -39,15 +44,7 @@ Once again, **well done on making it this far—welcome to the team!** This crew
 
 If you're **ever in need of any help**, reach out to any **S.W.A.T Member** or **S.W.A.T Leadership** by opening a  **[#Support Ticket](https://discord.com/channels/958271853158350850/1303104817228677150)**  .  
 
-Now go represent SWAT with pride! 🚀
-
-"""
-
-# Add Onboarding feedback later
-"""
-https://www.cnrswat.com/onboardingfeedback
-Password: Trainee2024
-Please fill this feedback form to help us improve our onboarding stage for other recruits!
+Now go represent SWAT with pride! <:swat_logo:1196404423874854992>
 """
 
 trainee_messages = [
@@ -197,4 +194,4 @@ ROLE_REQUEST_MESSAGE = """
 ⚠️ **Important:** Follow the instructions carefully to avoid delays. Let’s get you set up and ready to roll! 🚀
 """
 
-FEEDBACK_FORM_LINK = ""
+FEEDBACK_FORM_LINK = "https://cnrswat.com/applicationfeedback"

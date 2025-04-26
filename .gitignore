@@ -4,6 +4,9 @@ token-test.txt
 account_token.txt
 website-api-key.txt
 
+# DONT PUSH DATABASES
+*.db
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

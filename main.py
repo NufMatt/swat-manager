@@ -82,7 +82,7 @@ async def main():
         await bot.load_extension("cogs.recruitment")
         await bot.load_extension("cogs.tickets")
         await bot.load_extension("cogs.playerlist")
-        # await bot.load_extension("cogs.verification")
+        await bot.load_extension("cogs.verification")
         # await bot.load_extension("cogs.example_cog")
         await bot.start(TOKEN)
 

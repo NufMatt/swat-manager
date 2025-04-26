@@ -750,6 +750,14 @@ class TraineeDetailsModal(discord.ui.Modal, title="Trainee Application Details")
                             await member.add_roles(blacklist_role)
                         except Exception as e:
                             log(f"Error adding blacklist role for underage user: {e}", level="error")
+            
+            
+            activity_channel = guild.get_channel(ACTIVITY_CHANNEL_ID)
+            if activity_channel:
+                embed = create_user_activity_log_embed("recruitment", "Blacklist User", interaction.user,
+                                                    f"User {member.display_name} has been blacklisted, due to being underage.")
+                await activity_channel.send(embed=embed)
+            
             await interaction.response.send_message(
                 f"❌ You have been blacklisted because you are underage (under 16). If you wish to appeal, please open a <#{TICKET_CHANNEL_ID}> with the recruiters.",
                 ephemeral=True
@@ -2457,7 +2465,7 @@ class RecruitmentCog(commands.Cog):
         await interaction.followup.send(embed=acceptance_embed, ephemeral=False)
         
         dm_embed = discord.Embed(title=":white_check_mark: Your application as a S.W.A.T Trainee has been accepted!", description=":tada: Congratulations!\nYou’ve automatically received your Trainee role — the first step is complete!\n\n:pushpin: All additional information can be found in the #「:pushpin:」trainee-info channel.\nPlease make sure to carefully read through everything to get started on the right foot.\n\nWelcome aboard, and good luck on your journey!\n\n", colour=0x00c600)
-        # dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value=f"We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form]({FEEDBACK_FORM_LINK})\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
+        dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value=f"We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form]({FEEDBACK_FORM_LINK})\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
         
         # Send a DM to the applicant
         try:
@@ -2709,7 +2717,7 @@ class RecruitmentCog(commands.Cog):
             dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are restricted from applying for {can_reapply} days. You can reapply on {expires.strftime('%d-%m-%Y')}.", inline=False)
         dm_embed.add_field(name="", value="Thank you for your interest in joining SWAT and taking the time to apply.", inline=False)
         dm_embed.add_field(name="", value="", inline=False)
-        # dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value=f"We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form]({FEEDBACK_FORM_LINK})\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
+        dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value=f"We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form]({FEEDBACK_FORM_LINK})\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
         
         try:
             await applicant_user.send(embed=dm_embed)
@@ -2833,6 +2841,12 @@ class RecruitmentCog(commands.Cog):
                 await member_obj.add_roles(blacklist_role)
 
         log(f"User {member_id} has been blacklisted.")
+        activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+        if activity_channel:
+            embed = create_user_activity_log_embed("recruitment", "Blacklist User", interaction.user,
+                                                f"User {member_obj.display_name} has been blacklisted.")
+            await activity_channel.send(embed=embed)
+        
         embed = discord.Embed(
             title="User Blacklisted",
             description=f"<@{member_id}> has been blacklisted.",
@@ -2935,6 +2949,12 @@ class RecruitmentCog(commands.Cog):
                     pass  # ignore missing perms
 
         log(f"User {member_id} restriction removed.", level="info")
+        activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
+        if activity_channel:
+            embed = create_user_activity_log_embed("recruitment", "Remove Restriction", interaction.user,
+                                                f"Removed restrictions from user {member_obj.display_name}.")
+            await activity_channel.send(embed=embed)
+        
         embed = discord.Embed(
             title="Restriction Removed",
             description=f"Blacklist/timeout removed from <@{member_id}>.",
@@ -3027,56 +3047,57 @@ class RecruitmentCog(commands.Cog):
             )
 
         # 6) Call external API with correct header name
-        url     = f"{SWAT_WEBSITE_URL}/api/application/status"
-        payload = {"server": region_val.lower(), "status": status_val.lower()}
-        headers = {
-            "X-Api-Token":    website_api_token,
-            "Content-Type":   "application/json",
-            "User-Agent":     (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/114.0.0.0 Safari/537.36"
-            ),
-            "Accept":         "application/json, text/javascript, */*; q=0.01",
-            "Accept-Language":"en-US,en;q=0.9",
-        }
+        if SEND_API_DATA:
+            url     = f"{SWAT_WEBSITE_URL}/api/application/status"
+            payload = {"server": region_val.lower(), "status": status_val.lower()}
+            headers = {
+                "X-Api-Token":    website_api_token,
+                "Content-Type":   "application/json",
+                "User-Agent":     (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/114.0.0.0 Safari/537.36"
+                ),
+                "Accept":         "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language":"en-US,en;q=0.9",
+            }
 
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=10)
-            resp.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            body = getattr(e.response, "text", "")
-            log(f"API HTTP error {e.response.status_code}", level="error")
-            return await interaction.followup.send(
-                f"⚠ Website API returned {e.response.status_code} -> Data not updated",
-                ephemeral=True
-            )
-        except requests.exceptions.RequestException as e:
-            log(f"Error calling external API: {e}", level="error")
-            return await interaction.followup.send(
-                "⚠ Could not reach website application API.",
-                ephemeral=True
-            )
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=10)
+                resp.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                body = getattr(e.response, "text", "")
+                log(f"API HTTP error {e.response.status_code}", level="error")
+                return await interaction.followup.send(
+                    f"⚠ Website API returned {e.response.status_code} -> Data not updated",
+                    ephemeral=True
+                )
+            except requests.exceptions.RequestException as e:
+                log(f"Error calling external API: {e}", level="error")
+                return await interaction.followup.send(
+                    "⚠ Could not reach website application API.",
+                    ephemeral=True
+                )
 
-        # 7) Parse JSON
-        try:
-            data = resp.json()
-        except ValueError:
-            log(f"Invalid JSON from API: {resp.text}", level="error")
-            return await interaction.followup.send(
-                "⚠ Received invalid response from website API.",
-                ephemeral=True
-            )
+            # 7) Parse JSON
+            try:
+                data = resp.json()
+            except ValueError:
+                log(f"Invalid JSON from API: {resp.text}", level="error")
+                return await interaction.followup.send(
+                    "⚠ Received invalid response from website API.",
+                    ephemeral=True
+                )
 
-        if not data.get("success"):
-            err = data.get("error", "Unknown error")
-            log(f"External API error response: {err}", level="error")
-            return await interaction.followup.send(
-                f"⚠ API error: {err}",
-                ephemeral=True
-            )
+            if not data.get("success"):
+                err = data.get("error", "Unknown error")
+                log(f"External API error response: {err}", level="error")
+                return await interaction.followup.send(
+                    f"⚠ API error: {err}",
+                    ephemeral=True
+                )
 
-        log(f"External API status update succeeded: {region_val}→{status_val}", level="info")
+            log(f"External API status update succeeded: {region_val}→{status_val}", level="info")
 
         # 8) Final confirmation
         await interaction.followup.send(

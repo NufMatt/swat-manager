@@ -63,6 +63,7 @@ CHECK_INTERVAL = 30         # in seconds
 CACHE_UPDATE_INTERVAL = 300  # in seconds
 SWAT_WEBSITE_URL = "https://cnrswat.com"
 SWAT_WEBSITE_TOKEN_FILE = "website-api-key.txt"
+SEND_API_DATA = True
 
 API_URLS = {
     "SEA": "https://api.gtacnr.net/cnr/players?serverId=SEA",
