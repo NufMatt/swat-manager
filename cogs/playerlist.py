@@ -519,6 +519,7 @@ class PlayerListCog(commands.Cog):
         description="Shows top playtime for SWAT members in the given timeframe (days)."
     )
     async def topplaytime(self, ctx: commands.Context, days: int):
+        await ctx.defer(ephemeral=True)  # Defer the interaction immediately
         cutoff = datetime.utcnow() - timedelta(days=days)
         cutoff_iso = cutoff.isoformat()
         try:
@@ -528,7 +529,7 @@ class PlayerListCog(commands.Cog):
                 FROM playtime_log l
                 JOIN players_info p ON l.uid = p.uid
                 WHERE datetime(l.log_time) >= datetime(?)
-                  AND p.current_name LIKE '[SWAT]%'
+                AND p.current_name LIKE '[SWAT]%'
                 GROUP BY p.uid
                 ORDER BY playtime DESC
             """, (cutoff_iso,))
@@ -597,6 +598,7 @@ class PlayerListCog(commands.Cog):
         description="Shows playtime, last seen and past names for the specified player."
     )
     async def player(self, ctx: commands.Context, *, name: str):
+        await ctx.defer(ephemeral=True)  # Defer the interaction immediately
         try:
             cur = self.db_conn.cursor()
             cur.execute("SELECT * FROM players_info WHERE lower(current_name)=lower(?)", (name,))
