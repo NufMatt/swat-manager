@@ -2,12 +2,13 @@ import discord
 from discord import app_commands, ButtonStyle, Interaction
 from discord.ext import commands, tasks
 import asyncio
-from config import TOKEN_FILE
+from config_testing import TOKEN_FILE
 from cogs.helpers import *
 import os, threading
 from sqlite_web.sqlite_web import initialize_app, app
 import asyncio
 import platform
+from cogs.db_utils import *
 
 if platform.system() != "Windows":
     try:
@@ -80,6 +81,16 @@ async def shardinfo(interaction: discord.Interaction):
 
 @bot.event
 async def on_ready():
+        # -------------------------------
+    # Initialize databases
+    # -------------------------------
+    await initialize_database()
+    await init_role_requests_db()
+    await init_application_requests_db()
+    await init_applications_db()
+    await init_application_attempts_db()
+    await init_region_status()
+    await init_timeouts_db()
     print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
     try:
         synced = await bot.tree.sync()
@@ -93,7 +104,7 @@ async def main():
         await bot.load_extension("cogs.recruitment")
         await bot.load_extension("cogs.tickets")
         await bot.load_extension("cogs.playerlist")
-        await bot.load_extension("cogs.verification")
+        # await bot.load_extension("cogs.verification")
         # await bot.load_extension("cogs.example_cog")
         await bot.start(TOKEN)
 

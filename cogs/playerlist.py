@@ -5,7 +5,7 @@ from discord.ext import tasks, commands
 import requests, json, asyncio, aiohttp, re, pytz, sqlite3
 from datetime import datetime, timedelta
 import io
-from config import *
+from config_testing import *
 from cogs.helpers import log, set_stored_embed, get_stored_embed
 
 

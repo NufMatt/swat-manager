@@ -15,7 +15,7 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from config import *
+from config_testing import *
 
 from messages import *
 from cogs.helpers import *
@@ -45,16 +45,6 @@ def handle_interaction_errors(func: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-# -------------------------------
-# Initialize databases
-# -------------------------------
-initialize_database()
-init_role_requests_db()
-init_application_requests_db()
-init_applications_db()
-init_application_attempts_db()
-init_region_status()
-init_timeouts_db()
 
 # -------------------------------
 # Helper functions
@@ -115,7 +105,7 @@ async def set_user_nickname(member: discord.Member, role_label: str, username: s
         log(f"HTTPException changing nickname for {member.id}: {e}", level="error")
 
 async def close_thread(interaction: discord.Interaction, thread: discord.Thread) -> None:
-    result = remove_entry(thread.id)
+    result = await remove_entry(thread.id)
     if result:
         try:
             await thread.edit(locked=True, archived=True)
@@ -272,7 +262,7 @@ class CloseThreadView(discord.ui.View):
         if not is_in_correct_guild(interaction):
             await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
             return
-        ticket_data = get_entry(str(thread.id))
+        ticket_data = await get_entry(str(thread.id))
         if not ticket_data:
             await interaction.response.send_message("❌ No ticket data found for this thread.", ephemeral=True)
             return
@@ -1560,7 +1550,7 @@ class RecruitmentCog(commands.Cog):
         selected_role = role_type.value
         start_time = get_rounded_time()
         end_time = start_time + timedelta(days=7)
-        validate_entry = add_entry(
+        validate_entry = await add_entry(
             thread_id=str(thread.id),
             recruiter_id=str(interaction.user.id),
             starttime=start_time,
@@ -1724,7 +1714,7 @@ class RecruitmentCog(commands.Cog):
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.response.send_message("❌ Use this command inside a thread.", ephemeral=True)
             return
-        data = get_entry(str(interaction.channel.id))
+        data = await get_entry(str(interaction.channel.id))
         if not data:
             await interaction.response.send_message("❌ This thread is not associated with any trainee/cadet voting!", ephemeral=True)
             return
@@ -1756,7 +1746,7 @@ class RecruitmentCog(commands.Cog):
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.response.send_message("❌ This is not a thread.", ephemeral=True)
             return
-        data = get_entry(str(interaction.channel.id))
+        data = await get_entry(str(interaction.channel.id))
         if not data:
             await interaction.response.send_message("❌ No DB entry for this thread!", ephemeral=True)
             return
@@ -1871,7 +1861,7 @@ class RecruitmentCog(commands.Cog):
         await interaction.response.defer(ephemeral=False)
 
         thread_id = str(interaction.channel.id)
-        app_entry = get_entry(thread_id)
+        app_entry = await get_entry(thread_id)
         if not app_entry:
             await interaction.followup.send("❌ No application entry found for this thread.", ephemeral=True)
             return
@@ -1924,12 +1914,12 @@ class RecruitmentCog(commands.Cog):
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.response.send_message("❌ This command must be used in a thread.", ephemeral=True)
             return
-        data = get_entry(str(interaction.channel.id))
+        data = await get_entry(str(interaction.channel.id))
         if not data:
             await interaction.response.send_message("❌ No DB entry for this thread!", ephemeral=True)
             return
         await interaction.response.defer()
-        removed = remove_entry(str(interaction.channel.id))
+        removed = await remove_entry(str(interaction.channel.id))
         if removed:
             try:
                 channel_name = "✅ " + str(interaction.channel.name)
@@ -1997,7 +1987,7 @@ class RecruitmentCog(commands.Cog):
                         cadet_embed = discord.Embed(description=message_text, colour=0x008000)
                         await swat_chat.send(f"<@{data['user_id']}>")
                         await swat_chat.send(embed=cadet_embed)
-                    add_entry(
+                    await add_entry(
                         thread_id=thread.id,
                         recruiter_id=data["recruiter_id"],
                         starttime=start_time,
@@ -2045,7 +2035,7 @@ class RecruitmentCog(commands.Cog):
         if not isinstance(interaction.channel, discord.Thread):
             await interaction.response.send_message("❌ Use this in a thread channel.", ephemeral=True)
             return
-        data = get_entry(str(interaction.channel.id))
+        data = await get_entry(str(interaction.channel.id))
         if not data:
             await interaction.response.send_message("❌ No DB entry for this thread!", ephemeral=True)
             return
@@ -2061,7 +2051,7 @@ class RecruitmentCog(commands.Cog):
         except ValueError:
             await interaction.response.send_message("❌ Invalid endtime format in database.", ephemeral=True)
             return
-        if update_endtime(str(interaction.channel.id), new_end):
+        if await update_endtime(str(interaction.channel.id), new_end):
             if data["embed_id"]:
                 try:
                     msg = await interaction.channel.fetch_message(int(data["embed_id"]))
@@ -2110,7 +2100,7 @@ class RecruitmentCog(commands.Cog):
             await interaction.response.send_message("❌ This command must be used in a thread.", ephemeral=True)
             return
         try:
-            data = get_entry(str(interaction.channel.id))
+            data = await get_entry(str(interaction.channel.id))
             if not data:
                 await interaction.response.send_message("❌ No DB entry for this thread!", ephemeral=True)
                 return
@@ -2138,7 +2128,7 @@ class RecruitmentCog(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True)
         try:
-            data = get_entry(str(interaction.channel.id))
+            data = await get_entry(str(interaction.channel.id))
             if not data:
                 await interaction.followup.send("❌ No DB entry for this thread!", ephemeral=True)
                 return
@@ -2431,7 +2421,7 @@ class RecruitmentCog(commands.Cog):
         await msg.add_reaction(MINUS_ONE_EMOJI)
 
         # 6) Insert into the "entries" table for tracking
-        inserted = add_entry(
+        inserted = await add_entry(
             thread_id=str(trainee_thread.id),
             recruiter_id=app_data["recruiter_id"],
             starttime=start_time,
@@ -2597,7 +2587,7 @@ class RecruitmentCog(commands.Cog):
         await msg.add_reaction(MINUS_ONE_EMOJI)
 
         # 6) Insert into the "entries" table for tracking
-        inserted = add_entry(
+        inserted = await add_entry(
             thread_id=str(trainee_thread.id),
             recruiter_id=app_data["recruiter_id"],
             starttime=start_time,
@@ -3012,7 +3002,7 @@ class RecruitmentCog(commands.Cog):
         status_val = status.upper()   # "OPEN" or "CLOSED"
 
         # 2) Update local DB
-        if not update_region_status(region_val, status_val):
+        if not await update_region_status(region_val, status_val):
             return await interaction.followup.send(
                 "❌ Failed to update region status in the database.",
                 ephemeral=True

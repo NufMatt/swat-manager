@@ -3,205 +3,13 @@
 import discord
 from discord import app_commands, ButtonStyle
 from discord.ext import commands, tasks
-import asyncio, os, json, sqlite3, re, traceback
+import re
+import aiosqlite
 from datetime import datetime, timedelta
-from config import *
+from config_testing import *
 from messages import OPEN_TICKET_EMBED_TEXT
 from cogs.helpers import log, create_user_activity_log_embed, get_stored_embed, set_stored_embed
-
-# -------------------------------
-# Ticket & LOA-Reminder Database Initialization
-# -------------------------------
-
-def init_ticket_db():
-    try:
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS tickets (
-                thread_id   TEXT PRIMARY KEY,
-                user_id     TEXT NOT NULL,
-                created_at  TEXT NOT NULL,
-                ticket_type TEXT NOT NULL
-            )
-        """)
-        conn.commit()
-        log("Ticket database initialized successfully.")
-    except sqlite3.Error as e:
-        log(f"Database init error for tickets: {e}", level="error")
-    finally:
-        conn.close()
-
-def init_loa_db():
-    try:
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS loa_reminders (
-                thread_id     TEXT PRIMARY KEY,
-                user_id       TEXT NOT NULL,
-                end_date      TEXT NOT NULL,  -- ISO YYYY-MM-DD
-                reminder_sent INTEGER NOT NULL -- 0 = not sent, 1 = sent
-            )
-        """)
-        conn.commit()
-        log("LOA reminder database initialized successfully.")
-    except sqlite3.Error as e:
-        log(f"Database init error for LOA reminders: {e}", level="error")
-    finally:
-        conn.close()
-
-init_ticket_db()
-init_loa_db()
-
-# -------------------------------
-# Ticket Database Operations
-# -------------------------------
-
-active_tickets = {}
-
-def add_ticket(thread_id: str, user_id: str, created_at: str, ticket_type: str):
-    try:
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT OR IGNORE INTO tickets (thread_id, user_id, created_at, ticket_type)
-            VALUES (?, ?, ?, ?)
-        """, (thread_id, user_id, created_at, ticket_type))
-        conn.commit()
-        active_tickets[thread_id] = {
-            "user_id": user_id,
-            "created_at": created_at,
-            "ticket_type": ticket_type
-        }
-        log(f"Added ticket: thread_id={thread_id}, user_id={user_id}, type={ticket_type}")
-    except sqlite3.Error as e:
-        log(f"Error adding ticket (thread_id={thread_id}): {e}", level="error")
-    finally:
-        conn.close()
-
-def get_ticket_info(thread_id: str):
-    try:
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT thread_id, user_id, created_at, ticket_type
-            FROM tickets WHERE thread_id = ?
-        """, (thread_id,))
-        return cur.fetchone()
-    except sqlite3.Error as e:
-        log(f"Error reading ticket_info for {thread_id}: {e}", level="error")
-        return None
-    finally:
-        conn.close()
-
-def remove_ticket(thread_id: str):
-    try:
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("DELETE FROM tickets WHERE thread_id = ?", (thread_id,))
-        conn.commit()
-        active_tickets.pop(thread_id, None)
-        log(f"Removed ticket from DB: thread_id={thread_id}")
-    except sqlite3.Error as e:
-        log(f"Error removing ticket {thread_id} from DB: {e}", level="error")
-    finally:
-        conn.close()
-
-# -------------------------------
-# LOA Reminder Database Operations
-# -------------------------------
-
-def add_loa_reminder(thread_id: str, user_id: str, end_date_iso: str):
-    try:
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT OR REPLACE INTO loa_reminders (thread_id, user_id, end_date, reminder_sent)
-            VALUES (?, ?, ?, 0)
-        """, (thread_id, user_id, end_date_iso))
-        conn.commit()
-        log(f"LOA reminder added: thread_id={thread_id}, end_date={end_date_iso}")
-    except sqlite3.Error as e:
-        log(f"Error adding LOA reminder {thread_id}: {e}", level="error")
-    finally:
-        conn.close()
-
-def get_loa_reminder(thread_id: str):
-    try:
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT thread_id, user_id, end_date, reminder_sent
-            FROM loa_reminders WHERE thread_id = ?
-        """, (thread_id,))
-        return cur.fetchone()
-    except sqlite3.Error as e:
-        log(f"Error reading LOA reminder for {thread_id}: {e}", level="error")
-        return None
-    finally:
-        conn.close()
-
-def remove_loa_reminder(thread_id: str):
-    try:
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("DELETE FROM loa_reminders WHERE thread_id = ?", (thread_id,))
-        conn.commit()
-        log(f"LOA reminder removed: thread_id={thread_id}")
-    except sqlite3.Error as e:
-        log(f"Error removing LOA reminder {thread_id}: {e}", level="error")
-    finally:
-        conn.close()
-
-def update_loa_end_date(thread_id: str, new_end_date_iso: str):
-    try:
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE loa_reminders
-            SET end_date = ?, reminder_sent = 0
-            WHERE thread_id = ?
-        """, (new_end_date_iso, thread_id))
-        conn.commit()
-        log(f"LOA reminder extended: thread_id={thread_id}, new_end_date={new_end_date_iso}")
-    except sqlite3.Error as e:
-        log(f"Error updating LOA reminder {thread_id}: {e}", level="error")
-    finally:
-        conn.close()
-
-def mark_reminder_sent(thread_id: str):
-    try:
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE loa_reminders
-            SET reminder_sent = 1
-            WHERE thread_id = ?
-        """, (thread_id,))
-        conn.commit()
-        log(f"LOA reminder marked sent: thread_id={thread_id}")
-    except sqlite3.Error as e:
-        log(f"Error marking reminder sent for {thread_id}: {e}", level="error")
-    finally:
-        conn.close()
-
-def get_expired_loa():
-    today_iso = datetime.utcnow().date().isoformat()
-    try:
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT thread_id, user_id
-            FROM loa_reminders
-            WHERE end_date < ? AND reminder_sent = 0
-        """, (today_iso,))
-        return cur.fetchall()
-    except sqlite3.Error as e:
-        log(f"Error fetching expired LOA: {e}", level="error")
-        return []
-    finally:
-        conn.close()
+from cogs.db_utils import *
 
 # -------------------------------
 # Persistent Views and Modals
@@ -223,7 +31,7 @@ class CloseThreadView(discord.ui.View):
             )
 
         # Pull from SQLite instead of the in-memory dict
-        ticket_data = get_ticket_info(str(thread.id))
+        ticket_data = await get_ticket_info(str(thread.id))
         if not ticket_data:
             return await interaction.response.send_message(
                 "❌ No ticket data found for this thread.", ephemeral=True
@@ -233,7 +41,7 @@ class CloseThreadView(discord.ui.View):
         thread_id, user_id, created_at, ticket_type = ticket_data
 
         # Block closing if there's an active LOA reminder
-        if ticket_type == "loa" and get_loa_reminder(thread_id):
+        if ticket_type == "loa" and await get_loa_reminder(thread_id):
             return await interaction.response.send_message(
                 "❌ You must remove the active LOA first with `/loa_remove` before closing this thread.",
                 ephemeral=True
@@ -255,7 +63,7 @@ class CloseThreadView(discord.ui.View):
 
         # Perform the close
         try:
-            remove_ticket(thread_id)
+            await remove_ticket(thread_id)
             embed = discord.Embed(
                 title=f"Ticket closed by {interaction.user.display_name}",
                 colour=0xf51616
@@ -320,7 +128,7 @@ class LOAModal(discord.ui.Modal, title="Leave of Absence (LOA)"):
             embed.set_footer(text="Please add LOA role before accepting the Leave of Absence!")
             await thread.send(f"<@&{LEADERSHIP_ID}> <@{interaction.user.id}>")
             await thread.send(embed=embed, view=CloseThreadView())
-            add_ticket(str(thread.id), str(interaction.user.id), now_str, "loa")
+            await add_ticket(str(thread.id), str(interaction.user.id), now_str, "loa")
             await interaction.response.send_message("✅ Your LOA request has been submitted!", ephemeral=True)
             log(f"LOA ticket created for user {interaction.user.id}, thread_id={thread.id}")
         except discord.Forbidden:
@@ -403,7 +211,7 @@ class TicketView(discord.ui.View):
             log(f"HTTP error sending ticket embed: {e}", level="error")
             return
 
-        add_ticket(str(thread.id), str(interaction.user.id), now_str, ticket_type)
+        await add_ticket(str(thread.id), str(interaction.user.id), now_str, ticket_type)
         await interaction.response.send_message("✅ Your ticket has been created!", ephemeral=True)
 
 # -------------------------------
@@ -421,6 +229,13 @@ class TicketCog(commands.Cog):
         self.loa_reminder_task.start()
         # Load DB tickets into memory
         self.bot.loop.create_task(self.load_existing_tickets())
+
+    async def _init_dbs(self):
+        await self.bot.wait_until_ready()
+        await init_ticket_db()
+        await init_loa_db()
+        # now you can safely load_existing_tickets()…
+        await self.load_existing_tickets()
 
     def cog_unload(self):
         self.ensure_ticket_embed_task.cancel()
@@ -467,23 +282,22 @@ class TicketCog(commands.Cog):
 
     async def load_existing_tickets(self):
         await self.bot.wait_until_ready()
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute("SELECT thread_id, user_id, created_at, ticket_type FROM tickets")
-        rows = cur.fetchall()
-        conn.close()
-        for thread_id, user_id, created_at, ticket_type in rows:
+        # pull in-memory from the async helper
+        rows = await get_all_tickets()
+        for rec in rows:
+            thread_id = rec["thread_id"]
             try:
                 thread = self.bot.get_channel(int(thread_id))
                 if thread and isinstance(thread, discord.Thread):
                     active_tickets[thread_id] = {
-                        "user_id": user_id,
-                        "created_at": created_at,
-                        "ticket_type": ticket_type
+                        "user_id": rec["user_id"],
+                        "created_at": rec["created_at"],
+                        "ticket_type": rec["ticket_type"]
                     }
                     log(f"Re-registered ticket: {thread_id}")
             except Exception:
                 log(f"Failed to re-register thread {thread_id}", level="error")
+
 
     # -------------------------------
     # LOA Management Commands
@@ -502,24 +316,16 @@ class TicketCog(commands.Cog):
             return await interaction.response.send_message("❌ Only leadership can accept LOA.", ephemeral=True)
 
         # Must be an LOA ticket
-        ticket = get_ticket_info(str(thread.id))
+        ticket = await get_ticket_info(str(thread.id))
         if not ticket or ticket[3] != "loa":
             return await interaction.response.send_message("❌ This is not a LOA ticket.", ephemeral=True)
 
         # Prevent multiple active LOAs for the same user
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT 1 FROM loa_reminders WHERE user_id = ? AND reminder_sent = 0",
-            (ticket[1],)
-        )
-        if cur.fetchone():
-            conn.close()
+        if await has_active_loa_for_user(ticket[1]):
             return await interaction.response.send_message(
                 "❌ That user already has an active LOA. Remove it first with `/loa_remove`.",
                 ephemeral=True
             )
-        conn.close()
 
         # Extract the LOA end date from the embed
         async for msg in thread.history(limit=10):
@@ -537,7 +343,7 @@ class TicketCog(commands.Cog):
         end_iso = datetime.strptime(dd_mm_yyyy, "%d-%m-%Y").date().isoformat()
 
         # Record the reminder
-        add_loa_reminder(str(thread.id), ticket[1], end_iso)
+        await add_loa_reminder(str(thread.id), ticket[1], end_iso)
 
         # Confirm then archive
         await interaction.response.send_message(
@@ -563,7 +369,7 @@ class TicketCog(commands.Cog):
             return await interaction.response.send_message("❌ Only leadership can extend LOA.", ephemeral=True)
 
         # Must have an active LOA reminder
-        loa = get_loa_reminder(str(thread.id))
+        loa = await get_loa_reminder(str(thread.id))
         if not loa:
             return await interaction.response.send_message("❌ No active LOA to extend.", ephemeral=True)
 
@@ -586,7 +392,7 @@ class TicketCog(commands.Cog):
             new_date = dt.isoformat()
             human = until
 
-        update_loa_end_date(str(thread.id), new_date)
+        await update_loa_end_date(str(thread.id), new_date)
         await interaction.response.send_message(
             embed=discord.Embed(
                 title=f"✅ LOA extended until {human}.",
@@ -608,10 +414,10 @@ class TicketCog(commands.Cog):
         if leadership_role not in interaction.user.roles:
             return await interaction.response.send_message("❌ Only leadership can remove LOA.", ephemeral=True)
 
-        if not get_loa_reminder(str(thread.id)):
+        if not await get_loa_reminder(str(thread.id)):
             return await interaction.response.send_message("❌ No LOA to remove.", ephemeral=True)
 
-        remove_loa_reminder(str(thread.id))
+        await remove_loa_reminder(str(thread.id))
         await interaction.response.send_message(
             embed=discord.Embed(
                 title="✅ LOA reminder removed. You may now close the thread.",
@@ -628,15 +434,9 @@ class TicketCog(commands.Cog):
             return await interaction.response.send_message(
                 "❌ Only leadership can view active LOAs.", ephemeral=True
             )
-
-        # Fetch active LOA reminders
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT thread_id, user_id, end_date FROM loa_reminders WHERE reminder_sent = 0"
-        )
-        rows = cur.fetchall()
-        conn.close()
+        
+        # Get all active LOAs
+        rows = await get_active_loa_reminders()
 
         if not rows:
             return await interaction.response.send_message(
@@ -668,7 +468,7 @@ class TicketCog(commands.Cog):
     @tasks.loop(hours=1)
     async def loa_reminder_task(self):
         await self.bot.wait_until_ready()
-        expired = get_expired_loa()
+        expired = await get_expired_loa()
         for thread_id, user_id in expired:
             # Try to fetch the thread even if it's archived
             try:
@@ -692,7 +492,7 @@ class TicketCog(commands.Cog):
                 continue
 
             # Only mark as sent after a successful send
-            mark_reminder_sent(thread_id)
+            await mark_reminder_sent(thread_id)
 
     # -------------------------------
     # Existing Commands (unchanged)
@@ -733,7 +533,7 @@ class TicketCog(commands.Cog):
             await interaction.response.send_message(f"❌ Error creating private ticket: {e}", ephemeral=True)
             return
 
-        add_ticket(str(thread.id), str(interaction.user.id), now_str, "other")
+        await add_ticket(str(thread.id), str(interaction.user.id), now_str, "other")
         await interaction.response.send_message("✅ Your ticket has been created!", ephemeral=True)
 
         activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
@@ -771,12 +571,12 @@ class TicketCog(commands.Cog):
         if not interaction.guild or interaction.guild.id != GUILD_ID:
             return await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
 
-        ticket_data = get_ticket_info(str(thread.id))
+        ticket_data = await get_ticket_info(str(thread.id))
         if not ticket_data:
             return await interaction.response.send_message("❌ No ticket data found for this thread.", ephemeral=True)
 
         # Block closing if LOA active
-        if ticket_data[3] == "loa" and get_loa_reminder(str(thread.id)):
+        if ticket_data[3] == "loa" and await get_loa_reminder(str(thread.id)):
             return await interaction.response.send_message(
                 "❌ You must remove the active LOA first with `/loa_remove` before closing.",
                 ephemeral=True
@@ -793,7 +593,7 @@ class TicketCog(commands.Cog):
             return await interaction.response.send_message("❌ You do not have permission to close this ticket.", ephemeral=True)
 
         try:
-            remove_ticket(str(thread.id))
+            await remove_ticket(str(thread.id))
             embed = discord.Embed(
                 title=f"Ticket closed by {interaction.user.display_name}",
                 colour=0xf51616
