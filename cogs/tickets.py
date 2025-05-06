@@ -8,7 +8,7 @@ import aiosqlite
 from datetime import datetime, timedelta
 from config_testing import *
 from messages import OPEN_TICKET_EMBED_TEXT
-from cogs.helpers import log, create_user_activity_log_embed, get_stored_embed, set_stored_embed
+from cogs.helpers import *
 from cogs.db_utils import *
 
 # -------------------------------
@@ -22,48 +22,33 @@ class CloseThreadView(discord.ui.View):
     @discord.ui.button(label="Close Thread", style=ButtonStyle.danger, custom_id="close_thread")
     async def close_thread_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         thread = interaction.channel
-        log(f"Attempting close_thread_button for thread_id={thread.id if thread else 'None'} by user {interaction.user.id}")
-
-        # Only in the configured guild
+        log(f"User {interaction.user.id} issued ticket_close in thread {thread.id if thread else 'None'}.")
         if not interaction.guild or interaction.guild.id != GUILD_ID:
-            return await interaction.response.send_message(
-                "❌ This command can only be used in the specified guild.", ephemeral=True
-            )
+            return await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
 
-        # Pull from SQLite instead of the in-memory dict
         ticket_data = await get_ticket_info(str(thread.id))
         if not ticket_data:
-            return await interaction.response.send_message(
-                "❌ No ticket data found for this thread.", ephemeral=True
-            )
+            return await interaction.response.send_message("❌ No ticket data found for this thread.", ephemeral=True)
 
-        # ticket_data is a tuple: (thread_id, user_id, created_at, ticket_type)
-        thread_id, user_id, created_at, ticket_type = ticket_data
-
-        # Block closing if there's an active LOA reminder
-        if ticket_type == "loa" and await get_loa_reminder(thread_id):
+        # Block closing if LOA active
+        if ticket_data[3] == "loa" and await get_loa_reminder(str(thread.id)):
             return await interaction.response.send_message(
-                "❌ You must remove the active LOA first with `/loa_remove` before closing this thread.",
+                "❌ You must remove the active LOA first with `/loa_remove` before closing.",
                 ephemeral=True
             )
 
-        # Determine which role can close this type
-        if ticket_type == "recruiters":
+        if ticket_data[3] == "recruiters":
             closing_role = interaction.guild.get_role(RECRUITER_ID)
-        elif ticket_type == "botdeveloper":
+        elif ticket_data[3] == "botdeveloper":
             closing_role = interaction.guild.get_role(LEAD_BOT_DEVELOPER_ID)
         else:
             closing_role = interaction.guild.get_role(LEADERSHIP_ID)
 
-        # Only the opener or the role may close
-        if closing_role not in interaction.user.roles and interaction.user.id != int(user_id):
-            return await interaction.response.send_message(
-                "❌ You do not have permission to close this ticket.", ephemeral=True
-            )
+        if closing_role not in interaction.user.roles and interaction.user.id != int(ticket_data[1]):
+            return await interaction.response.send_message("❌ You do not have permission to close this ticket.", ephemeral=True)
 
-        # Perform the close
         try:
-            await remove_ticket(thread_id)
+            await remove_ticket(str(thread.id))
             embed = discord.Embed(
                 title=f"Ticket closed by {interaction.user.display_name}",
                 colour=0xf51616
@@ -71,15 +56,10 @@ class CloseThreadView(discord.ui.View):
             embed.set_footer(text="🔒This ticket is locked now!")
             await interaction.response.send_message(embed=embed)
             await thread.edit(locked=True, archived=True)
-            log(f"Ticket {thread_id} closed successfully by user {interaction.user.id}.")
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "❌ I don't have permission to close this thread.", ephemeral=True
-            )
-            log(f"Forbidden error closing thread {thread_id}", level="error")
-        except discord.HTTPException as e:
+            log(f"Ticket {thread.id} closed by {interaction.user.id}.")
+        except Exception as e:
             await interaction.response.send_message(f"❌ Failed to close thread: {e}", ephemeral=True)
-            log(f"HTTP error closing thread {thread_id}: {e}", level="error")
+            log(f"Error closing thread: {e}", level="error")
 
 class LOAModal(discord.ui.Modal, title="Leave of Absence (LOA)"):
     reason = discord.ui.TextInput(
@@ -221,21 +201,19 @@ class TicketView(discord.ui.View):
 class TicketCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Register persistent views
-        bot.add_view(TicketView())
-        bot.add_view(CloseThreadView())
-        # Start background tasks
-        self.ensure_ticket_embed_task.start()
-        self.loa_reminder_task.start()
-        # Load DB tickets into memory
         self.bot.loop.create_task(self.load_existing_tickets())
-
+        self.bot.loop.create_task(self._init_dbs())
+        
     async def _init_dbs(self):
         await self.bot.wait_until_ready()
         await init_ticket_db()
         await init_loa_db()
-        # now you can safely load_existing_tickets()…
         await self.load_existing_tickets()
+        self.bot.add_view(TicketView())
+        self.bot.add_view(CloseThreadView())
+        self.ensure_ticket_embed_task.start()
+        self.loa_reminder_task.start()
+        log("Tickets cog fully initialized")
 
     def cog_unload(self):
         self.ensure_ticket_embed_task.cancel()
@@ -257,7 +235,7 @@ class TicketCog(commands.Cog):
             log(f"Ticket channel {TICKET_CHANNEL_ID} not found.", level="error")
             return
 
-        stored = get_stored_embed("tickets_embed")
+        stored = await get_stored_embed("tickets_embed")
         stored_id = stored.get("message_id") if stored else None
 
         if stored_id:
@@ -273,7 +251,7 @@ class TicketCog(commands.Cog):
                        .replace("{leaddeveloper_emoji}", LEAD_BOT_DEVELOPER_EMOJI))
         embed = discord.Embed(title="🎟️ Open a Ticket", description=description, colour=0x28afcc)
         sent = await channel.send(embed=embed, view=TicketView())
-        set_stored_embed("tickets_embed", str(sent.id), str(channel.id))
+        await set_stored_embed("tickets_embed", str(sent.id), str(channel.id))
         log(f"New ticket embed created: {sent.id}")
 
     # -------------------------------
@@ -282,6 +260,7 @@ class TicketCog(commands.Cog):
 
     async def load_existing_tickets(self):
         await self.bot.wait_until_ready()
+        active_tickets = {}
         # pull in-memory from the async helper
         rows = await get_all_tickets()
         for rec in rows:

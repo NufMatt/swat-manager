@@ -6,7 +6,7 @@ import requests, json, asyncio, aiohttp, re, pytz, sqlite3
 from datetime import datetime, timedelta
 import io
 from config_testing import *
-from cogs.helpers import log, set_stored_embed, get_stored_embed
+from cogs.helpers import *
 
 
 class PlayerListCog(commands.Cog):
@@ -390,7 +390,7 @@ class PlayerListCog(commands.Cog):
         if region not in self._server_unreachable:
             self._server_unreachable[region] = False
 
-        stored = get_stored_embed(region)
+        stored = await get_stored_embed(region)
         if stored:
             MAX_RETRIES = 3
             for attempt in range(1, MAX_RETRIES + 1):
@@ -420,7 +420,7 @@ class PlayerListCog(commands.Cog):
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     msg_send = await channel.send(embed=embed_pre)
-                    set_stored_embed(region, str(msg_send.id), str(msg_send.channel.id))
+                    await set_stored_embed(region, str(msg_send.id), str(msg_send.channel.id))
                     await asyncio.sleep(1)
                     if self._server_unreachable.get(region, False):
                         log(f"Server is reachable again for region {region}.", level="info")

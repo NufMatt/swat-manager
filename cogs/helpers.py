@@ -1,7 +1,8 @@
 import discord
-from config import *
+from config_testing import *
 import logging
 import inspect
+import aiosqlite
 from datetime import datetime
 from typing import Optional, Dict
 DATABASE_FILE = "data.db"
@@ -84,79 +85,55 @@ def create_user_activity_log_embed(type: str, action: str, user: discord.Member,
 
     return embed
 
-def init_stored_embeds_db():
-    import sqlite3
+async def init_stored_embeds_db():
+    """
+    Initialize the stored_embeds table in the database if it doesn't exist.
+    """
     try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS stored_embeds (
-                embed_key TEXT PRIMARY KEY,
-                message_id TEXT NOT NULL,
-                channel_id TEXT NOT NULL
+        async with aiosqlite.connect(DATABASE_FILE) as db:
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stored_embeds (
+                    embed_key   TEXT PRIMARY KEY,
+                    message_id  TEXT NOT NULL,
+                    channel_id  TEXT NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.commit()
+            await db.commit()
         log("Stored embeds DB initialized successfully.")
     except Exception as e:
         log(f"Stored embeds DB Error: {e}", level="error")
-    finally:
-        conn.close()
-        
-init_stored_embeds_db()
 
 
-def set_stored_embed(embed_key: str, message_id: str, channel_id: str) -> bool:
-    import sqlite3
+async def get_stored_embed(key: str) -> Optional[Dict]:
+    async with aiosqlite.connect(DATABASE_FILE) as db:
+        async with db.execute(
+            "SELECT message_id, channel_id FROM stored_embeds WHERE embed_key = ?", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+
+    return {"message_id": row[0], "channel_id": row[1]} if row else None
+
+async def set_stored_embed(key: str, message_id: int, channel_id: int):
+    async with aiosqlite.connect(DATABASE_FILE) as db:
+        await db.execute("""
+            INSERT OR REPLACE INTO stored_embeds (key, message_id, channel_id)
+            VALUES (?,?,?)
+        """, (key, message_id, channel_id))
+        await db.commit()
+
+async def remove_stored_embed(embed_key: str) -> bool:
+    """
+    Delete a stored embed by its key. Returns True if a row was deleted.
+    """
     try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO stored_embeds (embed_key, message_id, channel_id)
-            VALUES (?, ?, ?)
-            """,
-            (embed_key, message_id, channel_id)
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        log(f"DB Error (set_stored_embed): {e}", level="error")
-        return False
-    finally:
-        conn.close()
-
-def get_stored_embed(embed_key: str) -> Optional[Dict]:
-    import sqlite3
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT message_id, channel_id FROM stored_embeds WHERE embed_key = ?",
-            (embed_key,)
-        )
-        row = cursor.fetchone()
-        if row:
-            return {"message_id": row[0], "channel_id": row[1]}
-        return None
-    except Exception as e:
-        log(f"DB Error (get_stored_embed): {e}", level="error")
-        return None
-    finally:
-        conn.close()
-
-def remove_stored_embed(embed_key: str) -> bool:
-    import sqlite3
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM stored_embeds WHERE embed_key = ?", (embed_key,))
-        conn.commit()
-        return cursor.rowcount > 0
+        async with aiosqlite.connect(DATABASE_FILE) as db:
+            cursor = await db.execute(
+                 "DELETE FROM stored_embeds WHERE embed_key = ?", (embed_key,)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
     except Exception as e:
         log(f"DB Error (remove_stored_embed): {e}", level="error")
         return False
-    finally:
-        conn.close()

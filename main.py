@@ -2,13 +2,15 @@ import discord
 from discord import app_commands, ButtonStyle, Interaction
 from discord.ext import commands, tasks
 import asyncio
-from config_testing import TOKEN_FILE
 from cogs.helpers import *
 import os, threading
 from sqlite_web.sqlite_web import initialize_app, app
 import asyncio
 import platform
 from cogs.db_utils import *
+from cogs.guild_resources import GuildResources
+
+from config_testing import TOKEN_FILE
 
 if platform.system() != "Windows":
     try:
@@ -89,6 +91,8 @@ async def on_ready():
     await init_application_attempts_db()
     await init_region_status()
     await init_timeouts_db()
+    await init_stored_embeds_db()
+
     print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
     try:
         synced = await bot.tree.sync()
@@ -98,6 +102,7 @@ async def on_ready():
 
 async def main():
     async with bot:
+        bot.resources = GuildResources(bot)
         # Load the cogs/extensions:
         await bot.load_extension("cogs.recruitment")
         await bot.load_extension("cogs.tickets")
