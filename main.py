@@ -17,8 +17,6 @@ if platform.system() != "Windows":
     except ImportError:
         pass  # uvloop isn’t installed or not available
 
-
-
 with open(TOKEN_FILE, "r", encoding="utf-8") as file:
     TOKEN = file.read().strip()
 
