@@ -6,6 +6,18 @@ from config import TOKEN_FILE
 from cogs.helpers import *
 import os, threading
 from sqlite_web.sqlite_web import initialize_app, app
+import asyncio
+import platform
+
+if platform.system() != "Windows":
+    try:
+        import uvloop
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    except ImportError:
+        pass  # uvloop isn’t installed or not available
+
+
+
 with open(TOKEN_FILE, "r", encoding="utf-8") as file:
     TOKEN = file.read().strip()
 
@@ -18,7 +30,6 @@ def start_sqlite_web():
 
 # In Deinem main() noch vor bot.run() starten
 threading.Thread(target=start_sqlite_web, daemon=True).start()
-
 
 intents = discord.Intents.default()
 intents.message_content = True
