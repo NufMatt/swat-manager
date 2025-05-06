@@ -1772,7 +1772,12 @@ class RecruitmentCog(commands.Cog):
         await close_thread(interaction, interaction.channel)
         
         # Remove nickname tag and roles if the member exists
-        member = guild.get_member(int(data["user_id"]))
+        try:
+            member = guild.get_member(int(data["user_id"])) or await guild.fetch_member(int(data["user_id"]))
+        except discord.NotFound:
+            log(f"Couldn’t find member {int(data["user_id"])} in guild.", level="warning")
+            member = None
+        
         if member:
             try:
                 temp_name = re.sub(r'(?:\s*\[(?:CADET|TRAINEE|SWAT)\])+$', '', member.nick if member.nick else member.name, flags=re.IGNORECASE)
@@ -1782,10 +1787,9 @@ class RecruitmentCog(commands.Cog):
             t_role = guild.get_role(TRAINEE_ROLE)
             c_role = guild.get_role(CADET_ROLE)
             try:
-                if t_role in member.roles:
-                    await member.remove_roles(t_role)
-                elif c_role in member.roles:
-                    await member.remove_roles(c_role)
+                to_remove = [r for r in (t_role, c_role) if r in member.roles]
+                if to_remove:
+                    await member.remove_roles(*to_remove, reason="Exited cadet/trainee program")
             except Exception as e:
                 log(f"Error removing roles for {data['user_id']}: {e}", level="error")
         else:
@@ -2011,8 +2015,7 @@ class RecruitmentCog(commands.Cog):
                 o_role = guild.get_role(OFFICER_ROLE_ID)
                 if c_role in member.roles:
                     await member.remove_roles(c_role)
-                await member.add_roles(s_role)
-                await member.add_roles(o_role)
+                await member.add_roles(s_role, o_role)
                 try:
                     await member.send(welcome_to_swat)
                 except discord.Forbidden:
