@@ -106,34 +106,33 @@ async def init_stored_embeds_db():
         log(f"Stored embeds DB Error: {e}", level="error")
 
 
-async def get_stored_embed(key: str) -> Optional[Dict]:
+async def get_stored_embed(embed_key: str) -> Optional[Dict]:
     async with aiosqlite.connect(DATABASE_FILE) as db:
         async with db.execute(
-            "SELECT message_id, channel_id FROM stored_embeds WHERE embed_key = ?", (key,)
+            "SELECT message_id, channel_id FROM stored_embeds WHERE embed_key = ?", (embed_key,)
         ) as cursor:
             row = await cursor.fetchone()
-
     return {"message_id": row[0], "channel_id": row[1]} if row else None
 
-async def set_stored_embed(key: str, message_id: int, channel_id: int):
+async def set_stored_embed(embed_key: str, message_id: int, channel_id: int):
     async with aiosqlite.connect(DATABASE_FILE) as db:
         await db.execute("""
-            INSERT OR REPLACE INTO stored_embeds (key, message_id, channel_id)
+            INSERT OR REPLACE INTO stored_embeds (embed_key, message_id, channel_id)
             VALUES (?,?,?)
-        """, (key, message_id, channel_id))
+        """, (embed_key, message_id, channel_id))
         await db.commit()
 
-async def remove_stored_embed(embed_key: str) -> bool:
-    """
-    Delete a stored embed by its key. Returns True if a row was deleted.
-    """
+def remove_stored_embed(embed_key: str) -> bool:
+    import sqlite3
     try:
-        async with aiosqlite.connect(DATABASE_FILE) as db:
-            cursor = await db.execute(
-                 "DELETE FROM stored_embeds WHERE embed_key = ?", (embed_key,)
-            )
-            await db.commit()
-            return cursor.rowcount > 0
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM stored_embeds WHERE embed_key = ?", (embed_key,))
+        conn.commit()
+        return cursor.rowcount > 0
     except Exception as e:
         log(f"DB Error (remove_stored_embed): {e}", level="error")
+        return False
+    finally:
+        conn.close()
         return False

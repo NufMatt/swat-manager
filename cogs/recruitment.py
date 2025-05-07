@@ -311,7 +311,7 @@ class RoleRequestView(discord.ui.View):
         if await get_role_request( user_id_str):  # DB lookup for pending request  # DB lookup for pending request
             await interaction.response.send_message("❌ You already have an open request.", ephemeral=True)
             return
-        await interaction.response.send_modal(NameChangeModal(self.resources))
+        await interaction.response.send_modal(NameChangeModal(interaction.client.resources))
 
     @discord.ui.button(label="Request Other", style=discord.ButtonStyle.secondary, custom_id="request_other")
     async def request_other(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -997,6 +997,8 @@ class RecruitmentCog(commands.Cog):
         self.ban_history_reminded = set()  # to track threads that already got a reminder
         self.claimed_reminders = {}
         self.ban_history_submitted = set() 
+        self.embed_message_id = None
+        self.application_embed_message_id = None
         self.bot.loop.create_task(self._wait_and_start())
 
 
@@ -1009,20 +1011,12 @@ class RecruitmentCog(commands.Cog):
         self.bot.add_view(ApplicationControlView())
 
         # Load embed message ID from file
-        global embed_message_id
         stored = await get_stored_embed("main_embed")
-        if stored:
-            embed_message_id = int(stored["message_id"])
-        else:
-            embed_message_id = None
+        self.embed_message_id = int(stored["message_id"]) if stored else None
         
         # Load embed message ID from file
-        global application_embed_message_id
         stored = await get_stored_embed("application_embed")
-        if stored:
-            application_embed_message_id = int(stored["message_id"])
-        else:
-            application_embed_message_id = None
+        self.application_embed_message_id = int(stored["message_id"]) if stored else None
         
         # Start tasks
         self.check_embed_task.start()
@@ -1044,27 +1038,26 @@ class RecruitmentCog(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def check_embed_task(self):
-        global embed_message_id
         try:
             channel = self.resources.request_ch
             if channel:
-                if embed_message_id:
-                    msg = PartialMessage(channel=channel, id=embed_message_id)
+                if self.embed_message_id:
+                    msg = PartialMessage(channel=channel, id=self.embed_message_id)
                     try:
                         # if it still exists, we assume it’s fine—no fetch
                         await msg.edit(embed=create_embed(), view=RoleRequestView())
                     except discord.NotFound:
                         # it vanished—create a brand new one
                         sent = await channel.send(embed=create_embed(), view=RoleRequestView())
-                        embed_message_id = sent.id
+                        self.embed_message_id = sent.id
                         await set_stored_embed("main_embed", sent.id, channel.id)
                 else:
                     embed = create_embed()
                     view = RoleRequestView()
                     msg = await channel.send(embed=embed, view=view)
-                    embed_message_id = msg.id
+                    self.embed_message_id = msg.id
                     await set_stored_embed("main_embed", str(msg.id), str(channel.id))
-                    log(f"Created new embed with ID: {embed_message_id}")
+                    log(f"Created new embed with ID: {self.embed_message_id}")
         except (discord.DiscordException, Exception) as e:
             log(f"Error in check_embed_task: {e}", level="error")
 
@@ -1075,8 +1068,8 @@ class RecruitmentCog(commands.Cog):
         if not channel:
             return
 
-        if application_embed_message_id:
-            msg = PartialMessage(channel=channel, id=application_embed_message_id)
+        if self.application_embed_message_id:
+            msg = PartialMessage(channel=channel, id=self.application_embed_message_id)
             try:
                 await msg.edit(embed=await create_application_embed(),
                                view=ApplicationView())
@@ -1084,12 +1077,12 @@ class RecruitmentCog(commands.Cog):
                 # it vanished—send and store a new one
                 sent = await channel.send(embed=await create_application_embed(),
                                           view=ApplicationView())
-                application_embed_message_id = sent.id
+                self.application_embed_message_id = sent.id
                 await set_stored_embed("application_embed", sent.id, channel.id)
         else:
             sent = await channel.send(embed=await create_application_embed(),
                                       view=ApplicationView())
-            application_embed_message_id = sent.id
+            self.application_embed_message_id = sent.id
             await set_stored_embed("application_embed", sent.id, channel.id)
 
     @tasks.loop(minutes=1)
