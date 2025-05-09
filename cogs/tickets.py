@@ -19,7 +19,7 @@ class CloseThreadView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Close Thread", style=ButtonStyle.danger, custom_id="close_thread")
+    @discord.ui.button(label="Close Thread", style=ButtonStyle.danger, custom_id="ticket_close_button")
     async def close_thread_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         thread = interaction.channel
         log(f"User {interaction.user.id} issued ticket_close in thread {thread.id if thread else 'None'}.")
@@ -87,6 +87,7 @@ class LOAModal(discord.ui.Modal, title="Leave of Absence (LOA)"):
             await interaction.response.send_message("❌ End date cannot be in the past.", ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True)
         now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         channel = interaction.channel
         thread = await channel.create_thread(
@@ -109,13 +110,13 @@ class LOAModal(discord.ui.Modal, title="Leave of Absence (LOA)"):
             await thread.send(f"<@&{LEADERSHIP_ID}> <@{interaction.user.id}>")
             await thread.send(embed=embed, view=CloseThreadView())
             await add_ticket(str(thread.id), str(interaction.user.id), now_str, "loa")
-            await interaction.response.send_message("✅ Your LOA request has been submitted!", ephemeral=True)
+            await interaction.followup.send("✅ Your LOA request has been submitted!", ephemeral=True)
             log(f"LOA ticket created for user {interaction.user.id}, thread_id={thread.id}")
         except discord.Forbidden:
-            await interaction.response.send_message("❌ Forbidden: Cannot send messages in the thread.", ephemeral=True)
+            await interaction.followup.send("❌ Forbidden: Cannot send messages in the thread.", ephemeral=True)
             log(f"Forbidden error sending LOA messages in thread {thread.id}", level="error")
         except discord.HTTPException as e:
-            await interaction.response.send_message(f"❌ HTTP Error sending messages: {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ HTTP Error sending messages: {e}", ephemeral=True)
             log(f"HTTP error sending LOA embed in thread {thread.id}: {e}", level="error")
 
 class TicketView(discord.ui.View):
@@ -143,12 +144,15 @@ class TicketView(discord.ui.View):
         await interaction.response.send_modal(LOAModal())
 
     async def create_ticket(self, interaction: discord.Interaction, ticket_type: str):
+        # **1)** Acknowledge the interaction immediately
+        await interaction.response.defer(ephemeral=True)
         log(f"Attempting create_ticket of type {ticket_type} by user {interaction.user.id}.")
-        if not interaction.guild or interaction.guild.id != GUILD_ID:
-            await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
-            return
 
-        # Choose role to ping based on ticket type
+        # **2)** Guild check
+        if not interaction.guild or interaction.guild.id != GUILD_ID:
+            return await interaction.followup.send("❌ This command can only be used in the specified guild.", ephemeral=True)
+
+        # **3)** Pick the ping role
         if ticket_type == "leadership":
             role_id = LEADERSHIP_ID
         elif ticket_type == "botdeveloper":
@@ -166,6 +170,7 @@ class TicketView(discord.ui.View):
         )
 
         try:
+            # **4)** Send the ping + welcome embed inside the new thread
             if ticket_type == "botdeveloper":
                 await thread.send(f"<@&{role_id}> <@294842627017408512> <@{interaction.user.id}>")
             else:
@@ -182,17 +187,15 @@ class TicketView(discord.ui.View):
             )
             await thread.send(embed=embed, view=CloseThreadView())
             log(f"Created ticket thread {thread.id} for user {interaction.user.id}, type={ticket_type}")
-        except discord.Forbidden:
-            await interaction.response.send_message("❌ Forbidden: Cannot send messages in the thread.", ephemeral=True)
-            log(f"Forbidden: can't send messages in thread {thread.id}.", level="error")
-            return
-        except discord.HTTPException as e:
-            await interaction.response.send_message(f"❌ HTTP Error sending messages: {e}", ephemeral=True)
-            log(f"HTTP error sending ticket embed: {e}", level="error")
-            return
 
+        except discord.Forbidden:
+            return await interaction.followup.send("❌ Forbidden: Cannot send messages in the thread.", ephemeral=True)
+        except discord.HTTPException as e:
+            return await interaction.followup.send(f"❌ HTTP Error sending messages: {e}", ephemeral=True)
+
+        # **5)** Persist it and let the user know
         await add_ticket(str(thread.id), str(interaction.user.id), now_str, ticket_type)
-        await interaction.response.send_message("✅ Your ticket has been created!", ephemeral=True)
+        await interaction.followup.send("✅ Your ticket has been created!", ephemeral=True)
 
 # -------------------------------
 # Ticket Cog
@@ -201,7 +204,7 @@ class TicketView(discord.ui.View):
 class TicketCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.bot.loop.create_task(self.load_existing_tickets())
+        self.active_tickets: Dict[str, Any] = {}
         self.bot.loop.create_task(self._init_dbs())
         
     async def _init_dbs(self):
@@ -260,7 +263,8 @@ class TicketCog(commands.Cog):
 
     async def load_existing_tickets(self):
         await self.bot.wait_until_ready()
-        active_tickets = {}
+        # reset and refill the cog-level dict
+        self.active_tickets.clear()
         # pull in-memory from the async helper
         rows = await get_all_tickets()
         for rec in rows:
@@ -268,7 +272,7 @@ class TicketCog(commands.Cog):
             try:
                 thread = self.bot.get_channel(int(thread_id))
                 if thread and isinstance(thread, discord.Thread):
-                    active_tickets[thread_id] = {
+                    self.active_tickets[thread_id] = {
                         "user_id": rec["user_id"],
                         "created_at": rec["created_at"],
                         "ticket_type": rec["ticket_type"]
@@ -423,18 +427,26 @@ class TicketCog(commands.Cog):
             )
 
         embed = discord.Embed(title="Active LOAs", color=discord.Color.blue())
-        for thread_id, user_id, end_date_iso in rows:
+        for rec in rows:
+            # pull out each field by its key
+            thread_id     = rec["thread_id"]
+            user_id       = rec["user_id"]
+            end_date_iso  = rec["end_date"]
+
             # Resolve user display name
-            user_obj = interaction.guild.get_member(int(user_id))
-            user_display = user_obj.display_name if user_obj else f"<@{user_id}>"
-            # Resolve thread mention
+            member = interaction.guild.get_member(int(user_id))
+            user_display = member.display_name if member else f"<@{user_id}>"
+
+            # Resolve (and mention) the thread
             thread = self.bot.get_channel(int(thread_id))
-            thread_mention = thread.mention if thread else thread_id
+            thread_mention = thread.mention if thread else f"<#{thread_id}>"
+
             # Format end date
             end_date_str = datetime.fromisoformat(end_date_iso).strftime("%d-%m-%Y")
+
             embed.add_field(
                 name=user_display,
-                value=f"Ends: {end_date_str}\nThread: <#{thread_mention}>",
+                value=f"Ends: {end_date_str}\nThread: {thread_mention}",
                 inline=False
             )
 
@@ -532,7 +544,7 @@ class TicketCog(commands.Cog):
             return await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
 
         thread_id = str(interaction.channel.id)
-        ticket_data = active_tickets.get(thread_id)
+        ticket_data = self.active_tickets.get(thread_id)
         if not ticket_data:
             return await interaction.response.send_message("❌ This thread is not a registered ticket.", ephemeral=True)
 

@@ -3,7 +3,7 @@
 import discord
 from discord import app_commands, ButtonStyle, Interaction, PartialMessage
 from discord.ext import commands, tasks
-import asyncio, os, json, sqlite3, re, traceback, random
+import asyncio, os, json, re, traceback, random
 import aiosqlite
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Callable
@@ -1382,32 +1382,28 @@ class RecruitmentCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        # Retrieve the timeout/blacklist record for this user.
-        record = await get_timeout_record( member.id)  # You may need to implement this helper.
-        if record:
-            if record["type"] == "timeout":
-                timeout_role = member.self.resources.timeout_role
-                if timeout_role and timeout_role not in member.roles:
-                    try:
-                        await member.add_roles(timeout_role)
-                        log(f"Re-added timeout role to rejoined member {member.id}")
-                    except Exception as e:
-                        log(f"Error re-adding timeout role for {member.id}: {e}", level="error")
-            elif record["type"] == "blacklist":
-                blacklist_role = member.self.resources.blacklist_role
-                if blacklist_role and blacklist_role not in member.roles:
-                    try:
-                        await member.add_roles(blacklist_role)
-                        log(f"Re-added blacklist role to rejoined member {member.id}")
-                    except Exception as e:
-                        log(f"Error re-adding blacklist role for {member.id}: {e}", level="error")
+        record = await get_timeout_record(str(member.id))
+        if not record:
+            return
+        # Pull your roles from the Cog’s resources, not member.self
+        if record["type"] == "timeout":
+            role = self.resources.timeout_role
+        else:
+            role = self.resources.blacklist_role
+
+        if role and role not in member.roles:
+            try:
+                await member.add_roles(role)
+                log(f"Re-added {record['type']} role to rejoined member {member.id}")
+            except Exception as e:
+                log(f"Error re-adding role for {member.id}: {e}", level="error")
 
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        async with aiosqlite.connect(DATABASE_FILE) as db:
             # 1) Fetch all open application threads
-            rows = await db.execute_fetchall(
+        async with aiosqlite.connect(DATABASE_FILE) as db:
+            cursor = await db.execute(
                 """
                 SELECT thread_id, recruiter_id, starttime, ingame_name, region
                 FROM application_threads
@@ -1415,6 +1411,7 @@ class RecruitmentCog(commands.Cog):
                 """,
                 (str(member.id),)
             )
+            rows = await cursor.fetchall()
 
             for thread_id, recruiter_id, starttime, ingame_name, region in rows:
                 thread = self.bot.get_channel(int(thread_id))
@@ -1451,18 +1448,16 @@ class RecruitmentCog(commands.Cog):
 
 
         # ----- Process Accepted Trainee/Cadet Threads -----
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT thread_id, recruiter_id, starttime, ingame_name, region, reminder_sent
-            FROM entries
-            WHERE user_id = ?
-            """,
-            (str(member.id),)
-        )
-        accepted_threads = cursor.fetchall()
-        conn.close()
+        async with aiosqlite.connect(DATABASE_FILE) as db:
+            cursor = await db.execute(
+                """
+                SELECT thread_id, recruiter_id, starttime, ingame_name, region, reminder_sent
+                FROM entries
+                WHERE user_id = ?
+                """,
+                (str(member.id),)
+            )
+            accepted_threads = await cursor.fetchall()
 
         if accepted_threads:
             for thread_id, recruiter_id, starttime, ingame_name, region, reminder_sent in accepted_threads:
@@ -1475,14 +1470,12 @@ class RecruitmentCog(commands.Cog):
                     )
                     # Update reminder_sent in the entries table if not already set
                     if reminder_sent == 0:
-                        conn = sqlite3.connect(DATABASE_FILE)
-                        cursor = conn.cursor()
-                        cursor.execute(
-                            "UPDATE entries SET reminder_sent = ? WHERE thread_id = ?",
-                            (1, thread_id)
-                        )
-                        conn.commit()
-                        conn.close()
+                        async with aiosqlite.connect(DATABASE_FILE) as db:
+                            await db.execute(
+                                "UPDATE entries SET reminder_sent = ? WHERE thread_id = ?",
+                                (1, thread_id)
+                            )
+                            await db.commit()
                     if recruiter_id:
                         content = f"<@{recruiter_id}>"
                     else:
@@ -2031,17 +2024,16 @@ class RecruitmentCog(commands.Cog):
                     msg = await interaction.channel.fetch_message(int(data["embed_id"]))
                     new_embed = await create_voting_embed(data["starttime"], new_end, int(data["recruiter_id"]), data["region"], data["ingame_name"], extended=True)
                     await msg.edit(embed=new_embed)
-                    conn = sqlite3.connect(DATABASE_FILE)
-                    cursor = conn.cursor()                   
-                    cursor.execute(
-                        """
-                        UPDATE entries 
-                        SET reminder_sent = 0
-                        WHERE thread_id = ?
-                        """,
-                        (interaction.channel.id,)
-                    )
-                    conn.commit()
+                    async with aiosqlite.connect(DATABASE_FILE) as db:
+                        await db.execute(
+                            """
+                            UPDATE entries 
+                            SET reminder_sent = 0
+                            WHERE thread_id = ?
+                            """,
+                            (str(interaction.channel.id),)
+                        )
+                        await db.commit()
 
                 except discord.NotFound:
                     await interaction.response.send_message("❌ Voting embed message not found.", ephemeral=True)
@@ -2115,8 +2107,6 @@ class RecruitmentCog(commands.Cog):
                             start_time = data["endtime"]
                     except ValueError:
                         log(f"Error parsing starttime: {data['starttime']}", level="error")
-                    conn = sqlite3.connect(DATABASE_FILE)
-                    cursor = conn.cursor()
                     now = datetime.now()
                     if data["role_type"] == "cadet":
                         voting_embed = discord.Embed(
@@ -2139,15 +2129,16 @@ class RecruitmentCog(commands.Cog):
                         voting_embed.add_field(name="Early voting issued by:", value=f"<@{interaction.user.id}>", inline=True)
                         embed_msg = await thread.send(f"<@&{SWAT_ROLE_ID}> It's time for another cadet voting!⌛", embed=voting_embed)
                         await asyncio.gather(*(embed_msg.add_reaction(e) for e in (PLUS_ONE_EMOJI, "❔", MINUS_ONE_EMOJI)))
-                        cursor.execute(
-                            """
-                            UPDATE entries 
-                            SET reminder_sent = 1 
-                            WHERE thread_id = ?
-                            """,
-                            (interaction.channel.id,)
-                        )
-                        conn.commit()
+                        async with aiosqlite.connect(DATABASE_FILE) as db:
+                            await db.execute(
+                                """
+                                UPDATE entries 
+                                SET reminder_sent = 1 
+                                WHERE thread_id = ?
+                                """,
+                                (str(interaction.channel.id),)
+                            )
+                            await db.commit()
                         await interaction.followup.send("✅ Early vote has been issued.", ephemeral=True)
                     else:
                         await interaction.followup.send("❌ Not a cadet thread!", ephemeral=True)
@@ -2783,7 +2774,7 @@ class RecruitmentCog(commands.Cog):
 
         # if they’re still in guild, add the Discord role
         if member_obj:
-            blacklist_role = interaction.self.resources.blacklist_role
+            blacklist_role = self.resources.blacklist_role
             if blacklist_role and blacklist_role not in member_obj.roles:
                 await member_obj.add_roles(blacklist_role)
 
@@ -2883,17 +2874,20 @@ class RecruitmentCog(commands.Cog):
             )
 
         # clean up Discord roles if they’re still here
-        timeout_role   = interaction.self.resources.timeout_role
-        blacklist_role = interaction.self.resources.blacklist_role
+        timeout_role   = self.resources.timeout_role
+        blacklist_role = self.resources.blacklist_role
         if member_obj:
             roles_to_strip = []
-            if timeout_role   and timeout_role   in member_obj.roles: roles_to_strip.append(timeout_role)
-            if blacklist_role and blacklist_role in member_obj.roles: roles_to_strip.append(blacklist_role)
+            if timeout_role and timeout_role in member_obj.roles:
+                roles_to_strip.append(timeout_role)
+            if blacklist_role and blacklist_role in member_obj.roles:
+                roles_to_strip.append(blacklist_role)
+
             if roles_to_strip:
                 try:
                     await member_obj.remove_roles(*roles_to_strip)
                 except discord.Forbidden:
-                    pass  # ignore missing perms
+                    pass
 
         log(f"User {member_id} restriction removed.", level="info")
         activity_channel = self.resources.activity_ch
@@ -2963,10 +2957,10 @@ class RecruitmentCog(commands.Cog):
             )
 
         # 3) Refresh the local embed
-        new_embed = create_application_embed()
-        channel   = self.resources.activity_ch
+        new_embed = await create_application_embed()
+        channel   = self.resources.apply_ch
         try:
-            msg = await channel.fetch_message(application_embed_message_id)
+            msg = await channel.fetch_message(self.application_embed_message_id)
             await msg.edit(embed=new_embed)
         except Exception as e:
             log(f"Error editing local application embed: {e}", level="error")

@@ -60,11 +60,11 @@ async def add_entry(thread_id: str, recruiter_id: str, starttime: datetime, endt
         async with get_db_connection() as conn:
             cursor = await conn.cursor()
             await cursor.execute(
-                """INSERT INTO entries 
-                   (thread_id, recruiter_id, starttime, endtime, role_type, embed_id, ingame_name, user_id, region)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (thread_id, recruiter_id, start_str, end_str, role_type, embed_id, ingame_name, user_id, region)
-            )
+                            """INSERT INTO entries 
+                            (thread_id, recruiter_id, starttime, endtime, embed_id, ingame_name, user_id, region, role_type)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (thread_id, recruiter_id, start_str, end_str, embed_id, ingame_name, user_id, region, role_type)
+                        )
             await conn.commit()
             log(f"Added entry to DB: thread_id={thread_id}, user_id={user_id}, role_type={role_type}")
             return True
@@ -646,7 +646,7 @@ async def get_open_applications() -> list:
                     "ingame_name": row[3],
                     "region": row[4],
                     "ban_history_sent": int(row[5]),
-                    "starttime": row[6]
+                    "starttime": datetime.fromisoformat(row[6])
                 })
     except aiosqlite.Error as e:
         log(f"DB Error (get_open_applications): {e}", level="error")
