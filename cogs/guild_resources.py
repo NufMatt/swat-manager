@@ -17,6 +17,7 @@ class GuildResources:
         self.apply_ch         = None
         self.requests_ch      = None
         self.activity_ch      = None
+        self.verify_ch        = None
         
         # … add any other channels you need …
 
@@ -32,6 +33,7 @@ class GuildResources:
         self.sea_role         = None
         self.blacklist_role   = None
         self.timeout_role     = None
+        self.lead_dev_role    = None
         # … add any other roles you need …
 
         # register _init to run once on ready
@@ -68,6 +70,7 @@ class GuildResources:
         self.ticket_ch        = guild.get_channel(TICKET_CHANNEL_ID)
         self.trainee_notes_ch = guild.get_channel(TRAINEE_NOTES_CHANNEL)
         self.cadet_notes_ch   = guild.get_channel(CADET_NOTES_CHANNEL)
+        self.verify_ch        = guild.get_channel(VERIFY_CHANNEL_ID)
         
 
         # --------------------
@@ -87,7 +90,7 @@ class GuildResources:
         self.mentor_role    = guild.get_role(MENTOR_ROLE_ID)
         self.guest_role     = guild.get_role(GUEST_ROLE)
         self.verified_role  = guild.get_role(VERIFIED_ROLE)
-        
+        self.lead_dev_role   = guild.get_role(LEAD_BOT_DEVELOPER_ID)
 
         # signal that resources are ready
         self._ready.set()

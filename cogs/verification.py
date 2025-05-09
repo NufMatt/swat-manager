@@ -1,221 +1,246 @@
+# cogs/verification.py
+
 import discord
 from discord.ext import commands
-import asyncio
-import aiohttp
-import sys, os
-from cogs.helpers import create_user_activity_log_embed
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from config import GUILD_ID, VERIFIED_ROLE, GUEST_ROLE, CHECK_CNR_VERIFIED_ROLE, CNR_ID, ACTIVITY_CHANNEL_ID
+import asyncio, aiohttp, time
+from datetime import datetime
+from config_testing import *
+from cogs.helpers import *
 
-try:
-    with open("account_token.txt", "r") as f:
-        ACCOUNT_TOKEN = f.read().strip()
-except Exception:
-    ACCOUNT_TOKEN = ""
+# -----------------------------------------------------------------------------
+# 1) A small helper for doing the external CnR lookup
+# -----------------------------------------------------------------------------
 
-from cogs.helpers import log
+async def fetch_cnr_member(session: aiohttp.ClientSession, user_id: int, token: str):
+    url = f"https://discord.com/api/v9/guilds/{CNR_ID}/members/{user_id}"
+    headers = {
+        "Authorization": token,
+        "Content-Type": "application/json",
+    }
+    async with session.get(url, headers=headers) as resp:
+        data = None
+        try:
+            data = await resp.json()
+        except:
+            pass
+        return resp.status, data or {}
+
+
+# -----------------------------------------------------------------------------
+# 2) The “Verify” button view
+# -----------------------------------------------------------------------------
+
+class VerifyView(discord.ui.View):
+    def __init__(self, cog: "VerificationCog"):
+        super().__init__(timeout=None)
+        self.cog = cog
+        # user_id -> last timestamp
+        self.cooldowns: dict[int, float] = {}
+
+    @discord.ui.button(label="🔄 Verify", style=discord.ButtonStyle.primary, custom_id="manual_verify")
+    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user = interaction.user
+        # 1) guild + roles from cache
+        guild = interaction.guild
+        verified = self.cog.verified_role
+        guest     = self.cog.guest_role
+        activity_ch = self.cog.activity_ch
+        
+        if verified in user.roles:
+            return await interaction.response.send_message(
+                "✅ You’re already verified!", ephemeral=True
+            )
+        
+        now = time.time()
+        last = self.cooldowns.get(user.id, 0)
+        if now - last < 300:
+            return await interaction.response.send_message(
+                "⚠️ Please wait before retrying verification.", ephemeral=True
+            )
+        self.cooldowns[user.id] = now
+
+
+        # 3) do the same external check
+        await interaction.response.defer(ephemeral=True)
+        async with aiohttp.ClientSession() as session:
+            status, member_data = await fetch_cnr_member(session, user.id, self.cog.account_token)
+
+        if status == 200 and str(CHECK_CNR_VERIFIED_ROLE) in member_data.get("roles", []):
+            # success: give role, remove guest
+            try:
+                await user.add_roles(verified)
+                if guest in user.roles:
+                    await user.remove_roles(guest)
+            except discord.Forbidden:
+                log(f"⛔ Cannot assign roles to {user.id}", level="error")
+
+            await interaction.followup.send("✅ Verification successful!", ephemeral=True)
+
+            # log
+            if activity_ch:
+                e = create_user_activity_log_embed(
+                    "verification", "Manual verify succeeded", user,
+                    "User clicked Verify and passed."
+                )
+                await activity_ch.send(embed=e)
+
+        else:
+            await interaction.followup.send(
+                "❌ Verification failed. Please make sure you have joined the CnR Discord and have the proper role there.",
+                ephemeral=True
+            )
+
+# -----------------------------------------------------------------------------
+# 3) The VerificationCog itself
+# -----------------------------------------------------------------------------
 
 class VerificationCog(commands.Cog):
-    """Cog for automatically verifying new members via an external API."""
-    
+    """Cog for automatically verifying new members via an external API,
+       and providing a manual-retry button in a dedicated channel."""
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # grab your resources object
+        self.resources = bot.resources
+        # config
+        self.account_token = open("account_token.txt", "r").read().strip()
+        # placeholders to fill in on_ready
+        # will hold our “Click to Verify” message ID
+        self.verify_msg_id: int | None = None
         log("VerificationCog loaded.")
-
-    async def send_dm(self, member: discord.Member, embed: discord.Embed, log_msg: str):
-        try:
-            await member.send(embed=embed)
-            log(log_msg)
-        except discord.Forbidden:
-            log(f"Forbidden: Could not send DM to member {member.id}.", level="error")
-
-    def create_embed(self, title: str, description: str, colour: int) -> discord.Embed:
-        embed = discord.Embed(title=title, description=description, colour=colour)
-        embed.set_author(name="S.W.A.T. Verification Bot")
-        return embed
 
     @commands.Cog.listener()
     async def on_ready(self):
-        user_id_info = f"(ID: {self.bot.user.id})" if self.bot.user else "(unknown bot ID)"
-        log(f"Logged in as {self.bot.user} {user_id_info} - VerificationCog is ready.")
+        # 1) wait for guild_resources to populate & cache roles/channels
+        await self._wait_for_resources()
+        res = await self.resources.ready()
+        self.verified_role = res.verified_role
+        self.guest_role    = res.guest_role
+        self.activity_ch   = res.activity_ch
+        self.verify_ch     = res.verify_ch
+        self.guild = self.bot.get_guild(GUILD_ID) or await self.bot.fetch_guild(GUILD_ID)
+        
+        # 2) make sure our embed‐storage table exists
+        await self._ensure_embed_db()
+
+        # 3) restore—or create—the manual-verify embed (and register its view)
+        await self._ensure_manual_verify_embed()
+
+        log("VerificationCog is fully initialized.")
+
+    async def _wait_for_resources(self):
+        # wait until roles/channels from guild_resources are populated
+        resources = await self.bot.resources.ready()
+        self.verify_ch = resources.verify_ch
+        if self.verify_ch is None:
+            log(f"❌ verify_ch not found (ID: {resources.verify_ch}).", level="error")
+            raise RuntimeError("verify channel missing")
+
+    async def _ensure_embed_db(self):
+        # make sure our table exists
+        await init_stored_embeds_db()
+
+    async def _ensure_manual_verify_embed(self):
+        stored = await get_stored_embed("verification_embed")
+
+        if stored:
+            try:
+                ch  = self.bot.get_channel(int(stored["channel_id"]))
+                msg = await ch.fetch_message(int(stored["message_id"]))
+                # re-attach your custom VerifyView
+                self.bot.add_view(VerifyView(self), message_id=msg.id)
+                self.verify_msg_id = msg.id
+                log(f"Restored verify embed {msg.id}")
+                return
+            except discord.NotFound:
+                log("Stored verify embed not found, recreating.", level="warning")
+
+        # no valid stored message → send new
+        view = VerifyView(self)
+        embed = discord.Embed(title="🔒 Verification Required",
+                            description="If you’re seeing this channel, it means your verification has **not been completed.**\n\n✅ To fix this:\n1. **Verify yourself in the CNR Discord here:**  <#937110452738084934>\n2. Once verified, **click the button below to request verification!**",
+                            colour=0x3ec62f)
+
+        embed.set_footer(text="S.W.A.T Verification Manager")
+        msg = await self.verify_ch.send(embed=embed, view=view)
+        self.bot.add_view(view, message_id=msg.id)
+        await set_stored_embed("verification_embed", msg.id, self.verify_ch.id)
+        self.verify_msg_id = msg.id
+        log(f"Posted new verify embed {msg.id}")
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        if not member:
-            log("on_member_join called with None as member! Skipping verification.", level="error")
+        await asyncio.sleep(2)  # let Discord finish onboarding
+        res = await self.resources.ready()
+
+        # try to get them from the cache
+        m = self.guild.get_member(member.id)
+        if not m:
+            log(f"Member {member.id} left before we could verify.", level="warning")
             return
 
-        log(f"Member {member} (ID: {member.id}) joined. Starting verification check.")
-        await asyncio.sleep(2)
+        # perform the same external check
+        async with aiohttp.ClientSession() as session:
+            status, data = await fetch_cnr_member(session, member.id, self.account_token)
 
-        guild = self.bot.get_guild(GUILD_ID)
-        if not guild:
-            log(f"Guild with ID {GUILD_ID} not found! Aborting on_member_join.", level="error")
-            return
+        # reference your cached roles & channel
+        ver = self.verified_role
+        gue = self.guest_role
+        act = self.activity_ch
 
-        current_member = guild.get_member(member.id)
-        if not current_member:
-            log(f"Member {member} (ID: {member.id}) is not found in guild. User might not be in Discord anymore.", level="error")
-            return
+        # handle success
+        if status == 200 and str(CHECK_CNR_VERIFIED_ROLE) in data.get("roles", []):
+            try:
+                await m.add_roles(ver)
+            except:
+                log(f"Cannot assign verified to {member.id}", level="error")
+            # DM
+            embed = discord.Embed(
+                title="✅ Automatic Verification Successful",
+                description=f"Hey {data.get('nick', member.name)}, you have been successfully verified via our CnR database!",
+                
+                colour=0x1cd946
+            )
+            await self._safe_dm(m, embed)
+            # log
+            if act:
+                e = create_user_activity_log_embed(
+                    "verification", "Auto‐verify success", member,
+                    "Automatically verified on join."
+                )
+                await act.send(embed=e)
 
-        url = f"https://discord.com/api/v9/guilds/{CNR_ID}/members/{member.id}"
-        headers = {
-            "Authorization": ACCOUNT_TOKEN,
-            "Content-Type": "application/json"
-        }
+        # all failures funnel through here
+        else:
+            # DM fail
+            embed = discord.Embed(
+                title="❌ Automatic Verification Failed",
+                description=(
+                    f"Hey {member.name}, we could **not** verify you on CnR. \n"
+                    "Please join the CnR Discord and make sure you are verified, \nthen click the Verify button in "
+                    f"<#{self.verify_ch.id}>."
+                ),
+                colour=0xf40000
+            )
+            await self._safe_dm(m, embed)
+            # give guest
+            try:
+                await m.add_roles(gue)
+            except:
+                log(f"Cannot assign guest to {member.id}", level="error")
+            # log
+            if act:
+                e = create_user_activity_log_embed(
+                    "verification", "Auto‐verify failed", member,
+                    f"Status: {status}"
+                )
+                await act.send(embed=e)
 
+    async def _safe_dm(self, member: discord.Member, embed: discord.Embed):
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as response:
-                    status = response.status
-                    text = await response.text()
-                    log(f"External API request sent for member {member.id}. Response code: {status}")
-                    log(f"Response: {text}")
-
-                    if status == 200:
-                        member_data = await response.json()
-                        user_roles = member_data.get("roles", [])
-                        if str(CHECK_CNR_VERIFIED_ROLE) in user_roles:
-                            log(f"Member {member.id} externally verified (role {CHECK_CNR_VERIFIED_ROLE} found).")
-                            
-                            role = guild.get_role(VERIFIED_ROLE)
-                            if role:
-                                try:
-                                    await current_member.add_roles(role)
-                                    log(f"Role '{role.name}' assigned to member {member.id}.")
-                                except discord.Forbidden:
-                                    log(f"Forbidden: Unable to modify roles for member {member.id}.", level="error")
-                                except discord.HTTPException as e:
-                                    log(f"HTTPException while modifying roles for member {member.id}: {e}", level="error")
-                            else:
-                                log(f"Role with ID {VERIFIED_ROLE} not found in the guild.", level="error")
-
-                            embed = self.create_embed(
-                                "✅ Automatic Verification Successful",
-                                f"Hey {member_data.get('nick', member.name)}, you have been successfully verified via our CnR database!",
-                                0x1cd946
-                            )
-                            await self.send_dm(current_member, embed, f"Verification DM sent to member {member.id}.")
-                            activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
-                            if activity_channel:
-                                embed = create_user_activity_log_embed("verification", "Successful verification", member, "User has been successfully verified.")
-                                await activity_channel.send(embed=embed)
-                        else:
-                            log(f"Member {member.id} not verified (external role {CHECK_CNR_VERIFIED_ROLE} missing).", level="error")
-                            embed = self.create_embed(
-                                "❌ Automatic Verification Failed",
-                                (
-                                    f"Hey {member.name}, we could **not** verify you in our CnR database. "
-                                    "Please ensure you are verified on the CnR Discord, and open a ticket "
-                                    "with the leadership here: <#1303104817228677150>"
-                                ),
-                                0xf40000
-                            )
-                            await self.send_dm(current_member, embed, f"Failure DM (not verified) sent to member {member.id}.")
-                            activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
-                            if activity_channel:
-                                embed = create_user_activity_log_embed("verification", "Failed verification", member, "User isn't verified in the CnR Discord")
-                                await activity_channel.send(embed=embed)
-                            
-                            # Add guest role
-                            guest_role = guild.get_role(GUEST_ROLE)
-                            if guest_role:
-                                try:
-                                    await current_member.add_roles(guest_role)
-                                    log(f"Guest role added to member {member.id}.")
-                                except discord.Forbidden:
-                                    log(f"Forbidden: Unable to add guest role to member {member.id}.", level="error")
-                                except discord.HTTPException as e:
-                                    log(f"HTTPException while adding guest role to member {member.id}: {e}", level="error")
-                            else:
-                                log(f"Guest role with ID {GUEST_ROLE} not found.", level="error")
-                    else:
-                        if status == 404:
-                            reason = "User can't be found in the CnR Discord"
-                        else:
-                            reason = f"API error (Status code: {status})"
-                        
-                        log(f"External API request for member {member.id} returned response code {status}.", level="error")
-                        embed = self.create_embed(
-                            "❌ Automatic Verification Failed",
-                            (
-                                f"Hey {member.name}, we could **not** verify you in our CnR database. "
-                                "Please ensure you are verified on the CnR Discord, and open a ticket "
-                                "with the leadership here: <#1303104817228677150>"
-                            ),
-                            0xf40000
-                        )
-                        await self.send_dm(current_member, embed, f"Failure DM due to API response sent to member {member.id}.")
-                        activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
-                        if activity_channel:
-                            embed = create_user_activity_log_embed("verification", "Failed verification", member, reason)
-                            await activity_channel.send(embed=embed)
-                        
-                        # Add guest role
-                        guest_role = guild.get_role(GUEST_ROLE)
-                        if guest_role:
-                            try:
-                                await current_member.add_roles(guest_role)
-                                log(f"Guest role added to member {member.id}.")
-                            except discord.Forbidden:
-                                log(f"Forbidden: Unable to add guest role to member {member.id}.", level="error")
-                            except discord.HTTPException as e:
-                                log(f"HTTPException while adding guest role to member {member.id}: {e}", level="error")
-                        else:
-                            log(f"Guest role with ID {GUEST_ROLE} not found.", level="error")
-                    
-        except aiohttp.ClientError as e:
-            log(f"API request error for member {member.id}: {e}", level="error")
-            embed = self.create_embed(
-                "❌ Automatic Verification Failed",
-                "An error occurred while checking your verification. Please try again later.",
-                0xf40000
-            )
-            await self.send_dm(current_member, embed, f"Error DM (ClientError) sent to member {member.id}.")
-            activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
-            if activity_channel:
-                reason = f"API request failed: {e}"
-                embed = create_user_activity_log_embed("verification", "Failed verification", member, reason)
-                await activity_channel.send(embed=embed)
-            
-            # Add guest role
-            guest_role = guild.get_role(GUEST_ROLE)
-            if guest_role:
-                try:
-                    await current_member.add_roles(guest_role)
-                    log(f"Guest role added to member {member.id}.")
-                except discord.Forbidden:
-                    log(f"Forbidden: Unable to add guest role to member {member.id}.", level="error")
-                except discord.HTTPException as e:
-                    log(f"HTTPException while adding guest role to member {member.id}: {e}", level="error")
-            else:
-                log(f"Guest role with ID {GUEST_ROLE} not found.", level="error")
-        except Exception as e:
-            log(f"Unexpected error in on_member_join for member {member.id}: {e}", level="error")
-            embed = self.create_embed(
-                "❌ Automatic Verification Failed",
-                f"An error occurred while checking your verification. Please contact Matt.\n**Error:** ```{e}```",
-                0xf40000
-            )
-            await self.send_dm(current_member, embed, f"Error DM (Exception) sent to member {member.id}.")
-            activity_channel = self.bot.get_channel(ACTIVITY_CHANNEL_ID)
-            if activity_channel:
-                reason = f"Unexpected error: {e}"
-                embed = create_user_activity_log_embed("verification", "Failed verification", member, reason)
-                await activity_channel.send(embed=embed)
-            
-            # Add guest role
-            guest_role = guild.get_role(GUEST_ROLE)
-            if guest_role:
-                try:
-                    await current_member.add_roles(guest_role)
-                    log(f"Guest role added to member {member.id}.")
-                except discord.Forbidden:
-                    log(f"Forbidden: Unable to add guest role to member {member.id}.", level="error")
-                except discord.HTTPException as e:
-                    log(f"HTTPException while adding guest role to member {member.id}: {e}", level="error")
-            else:
-                log(f"Guest role with ID {GUEST_ROLE} not found.", level="error")
+            await member.send(embed=embed)
+        except discord.Forbidden:
+            log(f"Cannot DM member {member.id}", level="error")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(VerificationCog(bot))

@@ -38,11 +38,11 @@ class CloseThreadView(discord.ui.View):
             )
 
         if ticket_data[3] == "recruiters":
-            closing_role = interaction.guild.get_role(RECRUITER_ID)
+            closing_role = interaction.client.resources.recruiter_role
         elif ticket_data[3] == "botdeveloper":
-            closing_role = interaction.guild.get_role(LEAD_BOT_DEVELOPER_ID)
+            closing_role = interaction.client.resources.lead_dev_role
         else:
-            closing_role = interaction.guild.get_role(LEADERSHIP_ID)
+            closing_role = interaction.client.resources.leadership_role
 
         if closing_role not in interaction.user.roles and interaction.user.id != int(ticket_data[1]):
             return await interaction.response.send_message("❌ You do not have permission to close this ticket.", ephemeral=True)
@@ -205,13 +205,25 @@ class TicketCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.active_tickets: Dict[str, Any] = {}
+        self.ticket_embed_id: Optional[int] = None
+        # kick off DB/init once ready
         self.bot.loop.create_task(self._init_dbs())
-        
+
     async def _init_dbs(self):
         await self.bot.wait_until_ready()
+        # ensure the two tables exist
         await init_ticket_db()
         await init_loa_db()
+
+        # load existing tickets into memory
         await self.load_existing_tickets()
+
+        # grab the stored embed ID just once
+        stored = await get_stored_embed("tickets_embed")
+        if stored and stored.get("message_id"):
+            self.ticket_embed_id = int(stored["message_id"])
+
+        # register our views & start loops
         self.bot.add_view(TicketView())
         self.bot.add_view(CloseThreadView())
         self.ensure_ticket_embed_task.start()
@@ -223,63 +235,62 @@ class TicketCog(commands.Cog):
         self.loa_reminder_task.cancel()
         log("TicketCog unloaded; tasks canceled.")
 
+
     # -------------------------------
     # Ensure Ticket Embed in Channel
     # -------------------------------
-
     @tasks.loop(minutes=5)
     async def ensure_ticket_embed_task(self):
         await self.bot.wait_until_ready()
-        await self._ensure_ticket_embed_check()
-
-    async def _ensure_ticket_embed_check(self):
-        channel = self.bot.get_channel(TICKET_CHANNEL_ID)
-        if not channel:
+        ch = self.bot.resources.ticket_ch
+        if ch is None:
             log(f"Ticket channel {TICKET_CHANNEL_ID} not found.", level="error")
             return
 
-        stored = await get_stored_embed("tickets_embed")
-        stored_id = stored.get("message_id") if stored else None
+        # If we _haven't_ loaded an ID yet, or if the message is missing, recreate it:
+        if not self.ticket_embed_id:
+            return await self._create_ticket_embed(ch)
 
-        if stored_id:
-            try:
-                await channel.fetch_message(int(stored_id))
-                return  # embed exists
-            except Exception:
-                log(f"Stored embed {stored_id} missing; recreating.", level="warning")
+        try:
+            # single fetch to verify it still exists
+            await ch.fetch_message(self.ticket_embed_id)
+        except discord.NotFound:
+            # if it's gone, create a new one
+            await self._create_ticket_embed(ch)
+        except Exception as e:
+            log(f"Error fetching stored ticket embed {self.ticket_embed_id}: {e}", level="warning")
 
-        description = (OPEN_TICKET_EMBED_TEXT
-                       .replace("{leadership_emoji}", LEADERSHIP_EMOJI)
-                       .replace("{recruiter_emoji}", RECRUITER_EMOJI)
-                       .replace("{leaddeveloper_emoji}", LEAD_BOT_DEVELOPER_EMOJI))
+    async def _create_ticket_embed(self, ch: discord.TextChannel):
+        description = (
+            OPEN_TICKET_EMBED_TEXT
+            .replace("{leadership_emoji}", LEADERSHIP_EMOJI)
+            .replace("{recruiter_emoji}", RECRUITER_EMOJI)
+            .replace("{leaddeveloper_emoji}", LEAD_BOT_DEVELOPER_EMOJI)
+        )
         embed = discord.Embed(title="🎟️ Open a Ticket", description=description, colour=0x28afcc)
-        sent = await channel.send(embed=embed, view=TicketView())
-        await set_stored_embed("tickets_embed", str(sent.id), str(channel.id))
-        log(f"New ticket embed created: {sent.id}")
+        msg = await ch.send(embed=embed, view=TicketView())
+        # cache and persist
+        self.ticket_embed_id = msg.id
+        await set_stored_embed("tickets_embed", str(msg.id), str(ch.id))
+        log(f"New ticket embed created and stored: {msg.id}")
 
     # -------------------------------
     # Load Existing Tickets on Start
     # -------------------------------
-
     async def load_existing_tickets(self):
         await self.bot.wait_until_ready()
-        # reset and refill the cog-level dict
         self.active_tickets.clear()
-        # pull in-memory from the async helper
         rows = await get_all_tickets()
         for rec in rows:
-            thread_id = rec["thread_id"]
-            try:
-                thread = self.bot.get_channel(int(thread_id))
-                if thread and isinstance(thread, discord.Thread):
-                    self.active_tickets[thread_id] = {
-                        "user_id": rec["user_id"],
-                        "created_at": rec["created_at"],
-                        "ticket_type": rec["ticket_type"]
-                    }
-                    log(f"Re-registered ticket: {thread_id}")
-            except Exception:
-                log(f"Failed to re-register thread {thread_id}", level="error")
+            tid = rec["thread_id"]
+            thread = self.bot.get_channel(int(tid))
+            if isinstance(thread, discord.Thread):
+                self.active_tickets[tid] = {
+                    "user_id":     rec["user_id"],
+                    "created_at":  rec["created_at"],
+                    "ticket_type": rec["ticket_type"]
+                }
+                log(f"Re-registered ticket: {tid}")
 
 
     # -------------------------------
@@ -289,28 +300,25 @@ class TicketCog(commands.Cog):
     @app_commands.command(name="loa_accept", description="Accept the LOA request on this thread.")
     async def loa_accept(self, interaction: discord.Interaction):
         thread = interaction.channel
-        # Only usable inside a LOA thread
         if not isinstance(thread, discord.Thread):
             return await interaction.response.send_message("❌ Use this inside a LOA thread.", ephemeral=True)
 
-        # Only leadership may run this
-        leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+        leadership_role = interaction.client.resources.leadership_role
         if leadership_role not in interaction.user.roles:
             return await interaction.response.send_message("❌ Only leadership can accept LOA.", ephemeral=True)
 
-        # Must be an LOA ticket
         ticket = await get_ticket_info(str(thread.id))
         if not ticket or ticket[3] != "loa":
             return await interaction.response.send_message("❌ This is not a LOA ticket.", ephemeral=True)
 
-        # Prevent multiple active LOAs for the same user
+        # enforce one per user
         if await has_active_loa_for_user(ticket[1]):
             return await interaction.response.send_message(
                 "❌ That user already has an active LOA. Remove it first with `/loa_remove`.",
                 ephemeral=True
             )
 
-        # Extract the LOA end date from the embed
+        # pull the date out of the embed
         async for msg in thread.history(limit=10):
             if msg.embeds:
                 embed = msg.embeds[0]
@@ -318,25 +326,24 @@ class TicketCog(commands.Cog):
         else:
             return await interaction.response.send_message("❌ Could not find LOA embed.", ephemeral=True)
 
-        match = re.search(r"(\d{2}-\d{2}-\d{4})", embed.description)
-        if not match:
+        m = re.search(r"(\d{2}-\d{2}-\d{4})", embed.description)
+        if not m:
             return await interaction.response.send_message("❌ Could not parse end date.", ephemeral=True)
 
-        dd_mm_yyyy = match.group(1)
-        end_iso = datetime.strptime(dd_mm_yyyy, "%d-%m-%Y").date().isoformat()
+        # convert to YYYY-MM-DD
+        end_iso = datetime.strptime(m.group(1), "%d-%m-%Y").date().isoformat()
 
-        # Record the reminder
+        # **only here** do we write the LOA reminder
         await add_loa_reminder(str(thread.id), ticket[1], end_iso)
 
-        # Confirm then archive
         await interaction.response.send_message(
             embed=discord.Embed(
                 title="✅ LOA accepted and reminder scheduled.",
                 colour=0x1dcb2e
-            ),
-            ephemeral=False
+            )
         )
         await thread.edit(archived=True, locked=False)
+
 
 
     @app_commands.command(name="loa_extend", description="Extend an existing LOA by days or until a given date.")
@@ -347,7 +354,7 @@ class TicketCog(commands.Cog):
             return await interaction.response.send_message("❌ Use this inside a LOA thread.", ephemeral=True)
 
         # Only leadership may run this
-        leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+        leadership_role = interaction.client.resources.leadership_role
         if leadership_role not in interaction.user.roles:
             return await interaction.response.send_message("❌ Only leadership can extend LOA.", ephemeral=True)
 
@@ -393,7 +400,7 @@ class TicketCog(commands.Cog):
             return await interaction.response.send_message("❌ Use this inside a LOA thread.", ephemeral=True)
 
         # Only leadership may run this
-        leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+        leadership_role = interaction.client.resources.leadership_role
         if leadership_role not in interaction.user.roles:
             return await interaction.response.send_message("❌ Only leadership can remove LOA.", ephemeral=True)
 
@@ -412,7 +419,7 @@ class TicketCog(commands.Cog):
     @app_commands.command(name="loa_list", description="List all active LOAs with user, end date, and thread.")
     async def loa_list(self, interaction: discord.Interaction):
         # Only leadership may run this
-        leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+        leadership_role = interaction.client.resources.leadership_role
         if leadership_role not in interaction.user.roles:
             return await interaction.response.send_message(
                 "❌ Only leadership can view active LOAs.", ephemeral=True
@@ -462,11 +469,12 @@ class TicketCog(commands.Cog):
         expired = await get_expired_loa()
         for thread_id, user_id in expired:
             # Try to fetch the thread even if it's archived
-            try:
-                thread = await self.bot.fetch_channel(int(thread_id))
-            except discord.HTTPException:
-                log(f"Could not fetch thread {thread_id}; skipping LOA reminder.", level="warning")
-                continue
+            thread = self.bot.get_channel(int(thread_id))
+            if thread is None:
+                try:
+                    thread = await self.bot.fetch_channel(int(thread_id))
+                except discord.HTTPException:
+                    continue
 
             # Attempt to unarchive, send the reminder, then re‑archive
             try:
@@ -495,7 +503,7 @@ class TicketCog(commands.Cog):
         if not interaction.guild or interaction.guild.id != GUILD_ID:
             return await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
 
-        leadership_role = interaction.guild.get_role(LEADERSHIP_ID)
+        leadership_role = interaction.client.resources.leadership_role
         if not leadership_role or leadership_role not in interaction.user.roles:
             return await interaction.response.send_message("❌ You do not have permission to open a private ticket.", ephemeral=True)
 
@@ -538,21 +546,33 @@ class TicketCog(commands.Cog):
 
     @app_commands.command(name="ticket_info", description="Show info about the current ticket thread.")
     async def ticket_info(self, interaction: discord.Interaction):
-        if not isinstance(interaction.channel, discord.Thread):
-            return await interaction.response.send_message("❌ Use this command in a ticket thread.", ephemeral=True)
+        thread = interaction.channel
+        # must be a thread in the right guild
+        if not isinstance(thread, discord.Thread):
+            return await interaction.response.send_message(
+                "❌ Use this command in a ticket thread.", ephemeral=True
+            )
         if not interaction.guild or interaction.guild.id != GUILD_ID:
-            return await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
+            return await interaction.response.send_message(
+                "❌ This command can only be used in the specified guild.", ephemeral=True
+            )
 
-        thread_id = str(interaction.channel.id)
-        ticket_data = self.active_tickets.get(thread_id)
+        # pull directly from your tickets table
+        ticket_data = await get_ticket_info(str(thread.id))
         if not ticket_data:
-            return await interaction.response.send_message("❌ This thread is not a registered ticket.", ephemeral=True)
+            return await interaction.response.send_message(
+                "❌ This thread is not a registered ticket.", ephemeral=True
+            )
+
+        # ticket_data == (thread_id, user_id, created_at, ticket_type)
+        _, user_id, created_at, ticket_type = ticket_data
 
         embed = discord.Embed(title="Ticket Information", color=discord.Color.blue())
-        embed.add_field(name="Thread ID", value=thread_id, inline=False)
-        embed.add_field(name="User", value=f"<@{ticket_data['user_id']}>", inline=False)
-        embed.add_field(name="Created At (UTC)", value=ticket_data["created_at"], inline=False)
-        embed.add_field(name="Ticket Type", value=ticket_data["ticket_type"], inline=False)
+        embed.add_field(name="Thread ID",        value=str(thread.id), inline=False)
+        embed.add_field(name="User",             value=f"<@{user_id}>", inline=False)
+        embed.add_field(name="Created At (UTC)", value=created_at,     inline=False)
+        embed.add_field(name="Ticket Type",      value=ticket_type,   inline=False)
+
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="ticket_close", description="Close the current ticket.")
@@ -574,11 +594,11 @@ class TicketCog(commands.Cog):
             )
 
         if ticket_data[3] == "recruiters":
-            closing_role = interaction.guild.get_role(RECRUITER_ID)
+            closing_role = interaction.client.resources.recruiter_role
         elif ticket_data[3] == "botdeveloper":
-            closing_role = interaction.guild.get_role(LEAD_BOT_DEVELOPER_ID)
+            closing_role = interaction.client.resources.lead_dev_role
         else:
-            closing_role = interaction.guild.get_role(LEADERSHIP_ID)
+            closing_role = interaction.client.resources.leadership_role
 
         if closing_role not in interaction.user.roles and interaction.user.id != int(ticket_data[1]):
             return await interaction.response.send_message("❌ You do not have permission to close this ticket.", ephemeral=True)
