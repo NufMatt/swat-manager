@@ -6,12 +6,7 @@ import aiosqlite
 import requests, json, asyncio, aiohttp, re, pytz
 from datetime import datetime, timedelta
 import io
-from config_testing import *  # Make sure this defines: API_URLS, API_URLS_FIVEM, GUILD_ID,
-                              # STATUS_CHANNEL_ID, CHECK_INTERVAL, CACHE_UPDATE_INTERVAL,
-                              # SWAT_WEBSITE_URL, SWAT_WEBSITE_TOKEN_FILE, SEND_API_DATA,
-                              # ROLE_TO_RANK, RANK_HIERARCHY,
-                              # LEADERSHIP_ID, MENTOR_ROLE_ID, SWAT_ROLE_ID, CADET_ROLE, TRAINEE_ROLE,
-                              # LEADERSHIP_EMOJI, MENTOR_EMOJI, SWAT_LOGO_EMOJI, TRAINEE_EMOJI, CADET_EMOJI
+from config_testing import *
 from cogs.helpers import log, set_stored_embed, get_stored_embed
 
 def format_playtime(seconds: int) -> str:
@@ -165,6 +160,7 @@ class PlayerListCog(commands.Cog):
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url) as resp:
                     resp.raise_for_status()
+                    
                     text = await resp.text(encoding="utf-8")
                     return json.loads(text)
         except asyncio.TimeoutError:
@@ -196,7 +192,7 @@ class PlayerListCog(commands.Cog):
                 try:
                     async with session.get(url, ssl=False, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                         resp.raise_for_status()
-                        out[region] = await resp.json()
+                        out[region] = await resp.json(content_type=None)
                         await asyncio.sleep(1.5)
                 except Exception as e:
                     log(f"Warning fetching FiveM {region}: {e}", level="warning")
@@ -237,66 +233,85 @@ class PlayerListCog(commands.Cog):
 
     # —— Embed builder —— #
 
-    async def create_embed(self, region, matching, queue_data, fivem_data):
+    async def create_embed(self, region, matching_players, queue_data, fivem_data):
         offline = False
-        color = 0x28ef05
-        if matching is None or (fivem_data.get(region) is None):
+        embed_color = 0x28ef05
+        if matching_players is None or (fivem_data and fivem_data.get(region) is None):
             offline = True
-            color = 0xf40006
-
-        # Check heartbeat
-        if queue_data.get(region) and not offline:
+            embed_color = 0xf40006
+        if queue_data and region in queue_data and not offline:
             try:
-                last = datetime.fromisoformat(queue_data[region]["LastHeartbeatDateTime"].replace("Z","+00:00"))
-                if datetime.utcnow().replace(tzinfo=pytz.UTC) - last > timedelta(minutes=1):
-                    offline = True
-                    color = 0xf40006
-            except Exception:
-                pass
-
-        flags = {"EU":"🇪🇺","NA":"🇺🇸","SEA":"🇸🇬"}
-        name = region[:-1] if region[-1].isdigit() else region
-        title = f"{flags.get(name,'')} {region}"
-        emb = discord.Embed(title=title, colour=color)
-
-        if offline:
-            emb.add_field(name="Server down?", value="No data", inline=False)
-            emb.add_field(name="🎮Players:", value="```no data```", inline=True)
-            emb.add_field(name="⌛Queue:",   value="```no data```", inline=True)
-        else:
-            # counts & lists
-            swat  = sum(p["type"] in ("SWAT","unknown","mentor") for p in matching)
-            ment  = sum(p["type"]=="mentor" for p in matching)
-            trn   = sum(p["type"] in ("trainee","cadet") for p in matching)
-            timer = "*?*"
-            try:
-                timer = self.time_convert(fivem_data[region]["vars"]["Time"])
-            except:
-                pass
-
-            if ment:
-                val = "\n".join(f"- {p['username']} (<@{p['discord_id']}>)" if p['discord_id'] else f"- {p['username']} (❔)"
-                                for p in matching if p["type"]=="mentor")
-                emb.add_field(name=f"{MENTOR_EMOJI} {ment} Mentors", value=val, inline=False)
-            if swat-ment:
-                val = "\n".join(f"- {p['username']} (<@{p['discord_id']}>)" if p['discord_id'] else f"- {p['username']} (❔)"
-                                for p in matching if p["type"] in ("SWAT","unknown"))
-                emb.add_field(name=f"{SWAT_LOGO_EMOJI} {swat} SWAT", value=val, inline=False)
-            if trn:
-                val = "\n".join(
-                    f"{(TRAINEE_EMOJI if p['type']=='trainee' else CADET_EMOJI)} {p['username']} (<@{p['discord_id']}>)"
-                    for p in matching if p["type"] in ("trainee","cadet")
+                last_heartbeat = datetime.fromisoformat(
+                    queue_data[region]["LastHeartbeatDateTime"].replace("Z", "+00:00")
                 )
-                emb.add_field(name=f"{trn} Cadets/Trainees", value=val, inline=False)
-
-            q = queue_data.get(region, {})
-            emb.add_field(name="🎮Players:", value=f"```{q.get('Players','?')}/{q.get('MaxPlayers','?')}```", inline=True)
-            emb.add_field(name="⌛Queue:",   value=f"```{q.get('QueuedPlayers','?')}```", inline=True)
-            emb.add_field(name="", value=timer, inline=False)
-
-        emb.set_footer(text="Refreshes every 60s")
-        emb.timestamp = datetime.utcnow()
-        return emb
+                if datetime.now(pytz.UTC) - last_heartbeat > timedelta(minutes=1):
+                    offline = True
+                    embed_color = 0xf40006
+            except Exception as e:
+                log(f"Error parsing last heartbeat for region {region}: {e}", level="error")
+        else:
+            offline = True
+            embed_color = 0xf40006
+        flags = {"EU": "🇪🇺 ", "NA": "🇺🇸 ", "SEA": "🇸🇬 "}
+        region_name = region[:-1] if region[-1].isdigit() else region
+        title = f"{flags.get(region_name, '')}{region}"
+        embed = discord.Embed(title=title, colour=embed_color)
+        if offline:
+            embed.add_field(name="Server or API down?", value="No Data for this server!", inline=False)
+            embed.add_field(name="🎮Players:", value="```no data```", inline=True)
+            embed.add_field(name="⌛Queue:", value="```no data```", inline=True)
+            embed.set_footer(text="Refreshes every 60 seconds")
+            embed.timestamp = datetime.now()
+            return embed
+        if matching_players is not None and not offline:
+            swat_count = sum(p["type"] in ("unknown", "SWAT", "mentor") for p in matching_players)
+            mentor_count = sum(p["type"] == "mentor" for p in matching_players)
+            trainee_count = sum(p["type"] in ("trainee", "cadet") for p in matching_players)
+            try:
+                restart_timer = self.time_convert(fivem_data[region]["vars"]["Time"])
+            except Exception as e:
+                log(f"Error fetching restart timer for region {region}: {e}", level="warning")
+                restart_timer = "*No restart data available!*"
+            if mentor_count:
+                val = ""
+                for mp in matching_players:
+                    if mp["type"] == "mentor":
+                        val += f"\n - {mp['username']} (<@{mp['discord_id']}>)" if mp['discord_id'] else f"\n - {mp['username']} (❔)"
+                embed.add_field(name=f"{MENTOR_EMOJI} {mentor_count} Mentors Online:", value=val, inline=False)
+            if swat_count - mentor_count > 0:
+                val = ""
+                for mp in matching_players:
+                    if mp["type"] in ("SWAT", "unknown"):
+                        val += f"\n - {mp['username']} (<@{mp['discord_id']}>)" if mp['discord_id'] else f"\n - {mp['username']} (❔)"
+                embed.add_field(name=f"{SWAT_LOGO_EMOJI} {swat_count} SWAT Online:", value=val, inline=False)
+            if trainee_count:
+                val = ""
+                for mp in matching_players:
+                    if mp["type"] == "trainee":
+                        val += f"\n{TRAINEE_EMOJI} {mp['username']} (<@{mp['discord_id']}>)"
+                    elif mp["type"] == "cadet":
+                        val += f"\n{CADET_EMOJI} {mp['username']} (<@{mp['discord_id']}>)"
+                embed.add_field(name=f"{trainee_count} Cadets / Trainees Online:", value=val, inline=False)
+            
+            if all(p["type"] not in ("SWAT", "mentor", "trainee", "cadet", "unknown") for p in matching_players):
+                embed.add_field(name="\n*Nobody is online*\n", value="", inline=False)
+            if queue_data and region in queue_data:
+                p = queue_data[region]
+                # embed.add_field(name=f"{SWAT_LOGO_EMOJI}SWAT:", value=f"``` {swat_count} ```", inline=True)
+                embed.add_field(name="🎮Players:", value=f"```{p['Players']}/{p['MaxPlayers']}```", inline=True)
+                embed.add_field(name="⌛Queue:", value=f"```{p['QueuedPlayers']}```", inline=True)
+                embed.add_field(name="", value=restart_timer, inline=False)
+            else:
+                # embed.add_field(name=f"{SWAT_LOGO_EMOJI}SWAT:", value=f"```{swat_count}```", inline=True)
+                embed.add_field(name="🎮Players:", value="```no data```", inline=True)
+                embed.add_field(name="⌛Queue:", value="```no data```", inline=True)
+        else:
+            embed.add_field(name="Server or API down?", value="No Data for this server!", inline=False)
+            embed.add_field(name="🎮Players:", value="```no data```", inline=True)
+            embed.add_field(name="⌛Queue:", value="```no data```", inline=True)
+        embed.set_footer(text="Refreshes every 60 seconds")
+        embed.timestamp = datetime.now()
+        return embed
 
     # —— Main loop —— #
 
@@ -400,12 +415,14 @@ class PlayerListCog(commands.Cog):
 
             emb = await self.create_embed(reg, matching, queue_data, fivem_data)
             # stored embed
-            stored = get_stored_embed(reg)
+            stored = await get_stored_embed(reg)
             if stored:
+                message_id = stored["message_id"]
+
                 # edit
                 for i in range(3):
                     try:
-                        msg = await channel.fetch_message(stored["message_id"])
+                        msg = await channel.fetch_message(int(message_id))
                         await msg.edit(embed=emb)
                         break
                     except discord.HTTPException as e:

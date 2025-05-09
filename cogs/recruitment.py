@@ -912,7 +912,9 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
             description=f"**Applicant:** <@{interaction.user.id}>",
             color=0x07ed13
         )
-        embed.add_field(name="🎮 In-Game Name", value=f"```{ign or 'N/A'}```", inline=False)
+        embed.add_field(name="🎮 In-Game Name", value=f"```{ign or 'N/A'}```", inline=True)
+        embed.add_field(name="🌍 Region", value=f"```{region or 'N/A'}```", inline=True)
+        embed.add_field(name="", value="", inline=False)  # Empty field for spacing
         embed.add_field(name="🔞 Age", value=f"```{age or 'N/A'}```", inline=True)
         embed.add_field(name="💪 Level", value=f"```{level or 'N/A'}```", inline=True)
         embed.add_field(name="❓ Why Join?", value=f"```{join_reason or 'N/A'}```", inline=False)
@@ -1836,7 +1838,7 @@ class RecruitmentCog(commands.Cog):
             return
 
         # Determine the role suffix based on the role type.
-        role_suffix = "Trainee Application" if app_entry["role_type"] == "trainee" else "Cadet Notes"
+        role_suffix = "Trainee Notes" if app_entry["role_type"] == "trainee" else "Cadet Notes"
         new_thread_name = f"{new_name} - {role_suffix}"
         await interaction.channel.edit(name=new_thread_name)
 
