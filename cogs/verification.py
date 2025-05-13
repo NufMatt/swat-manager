@@ -89,6 +89,14 @@ class VerifyView(discord.ui.View):
                 "❌ Verification failed. Please make sure you have joined the CnR Discord and have the proper role there.",
                 ephemeral=True
             )
+            if activity_ch:
+                e = create_user_activity_log_embed(
+                    "verification",
+                    "Manual verify failed",
+                    user,
+                    "User clicked Verify and failed."
+                )
+                await activity_ch.send(embed=e)
 
 # -----------------------------------------------------------------------------
 # 3) The VerificationCog itself
@@ -109,6 +117,11 @@ class VerificationCog(commands.Cog):
         self.verify_msg_id: int | None = None
         log("VerificationCog loaded.")
 
+    def create_embed(self, title: str, description: str, colour: int) -> discord.Embed:
+        embed = discord.Embed(title=title, description=description, colour=colour)
+        embed.set_author(name="S.W.A.T. Verification Bot")
+        return embed
+    
     @commands.Cog.listener()
     async def on_ready(self):
         # 1) wait for guild_resources to populate & cache roles/channels
@@ -157,10 +170,14 @@ class VerificationCog(commands.Cog):
 
         # no valid stored message → send new
         view = VerifyView(self)
-        embed = discord.Embed(title="🔒 Verification Required",
-                            description="If you’re seeing this channel, it means your verification has **not been completed.**\n\n✅ To fix this:\n1. **Verify yourself in the CNR Discord here:**  <#937110452738084934>\n2. Once verified, **click the button below to request verification!**",
-                            colour=0x3ec62f)
-
+        embed = self.create_embed(
+            "🔒 Verification Required",
+            "If you’re seeing this channel, it means your verification has **not been completed.**\n\n"
+            "✅ To fix this:\n"
+            "1. **Verify yourself in the CNR Discord here:**  <#937110452738084934>\n"
+            "2. Once verified, **click the button below to request verification!**",
+            0x3ec62f
+        )
         embed.set_footer(text="S.W.A.T Verification Manager")
         msg = await self.verify_ch.send(embed=embed, view=view)
         self.bot.add_view(view, message_id=msg.id)
@@ -195,17 +212,16 @@ class VerificationCog(commands.Cog):
             except:
                 log(f"Cannot assign verified to {member.id}", level="error")
             # DM
-            embed = discord.Embed(
-                title="✅ Automatic Verification Successful",
-                description=f"Hey {data.get('nick', member.name)}, you have been successfully verified via our CnR database!",
-                
-                colour=0x1cd946
+            embed = self.create_embed(
+                "✅ Automatic Verification Successful",
+                f"Hey {data.get('nick', member.name)}, you have been successfully verified via our CnR database!",
+                0x1cd946
             )
             await self._safe_dm(m, embed)
             # log
             if act:
                 e = create_user_activity_log_embed(
-                    "verification", "Auto‐verify success", member,
+                    "verification", "Successful verification", member,
                     "Automatically verified on join."
                 )
                 await act.send(embed=e)
@@ -213,14 +229,14 @@ class VerificationCog(commands.Cog):
         # all failures funnel through here
         else:
             # DM fail
-            embed = discord.Embed(
-                title="❌ Automatic Verification Failed",
-                description=(
-                    f"Hey {member.name}, we could **not** verify you on CnR. \n"
-                    "Please join the CnR Discord and make sure you are verified, \nthen click the Verify button in "
-                    f"<#{self.verify_ch.id}>."
+            embed = self.create_embed(
+                "❌ Automatic Verification Failed",
+                (
+                    f"Hey {member.name}, we could **not** verify you in our CnR database. "
+                    "Please ensure you are verified on the CnR Discord, and then click "
+                    "the verify button here: <#1370260376276697140>"
                 ),
-                colour=0xf40000
+                0xf40000
             )
             await self._safe_dm(m, embed)
             # give guest
@@ -228,11 +244,21 @@ class VerificationCog(commands.Cog):
                 await m.add_roles(gue)
             except:
                 log(f"Cannot assign guest to {member.id}", level="error")
-            # log
+           
             if act:
+                # choose a human-readable reason
+                reason = (
+                    "User not found in the CnR Discord"
+                    if status == 404 else
+                    "Missing CnR-verified role"
+                    if status == 200 else
+                    f"API error (status {status})"
+                )
                 e = create_user_activity_log_embed(
-                    "verification", "Auto‐verify failed", member,
-                    f"Status: {status}"
+                    "verification",
+                    "Failed verification",
+                    member,
+                    reason
                 )
                 await act.send(embed=e)
 
