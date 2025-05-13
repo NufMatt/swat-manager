@@ -391,6 +391,7 @@ class RequestActionView(discord.ui.View):
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="request_accept:{uid}")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Attempt to extract the original user id from the custom_id; if not found, fallback to self.user_id.
+        await interaction.response.defer(thinking=True)
         try:
             parts = button.custom_id.split(":")
             original_user_id = parts[1] if len(parts) > 1 else self.user_id
@@ -948,7 +949,7 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
         # 4) Prep header counts
         app_count = len(filtered_history)
         attempt_count = len(recent_attempts)
-        lines = [f"- {app_count} previous Application(s)", f"- {attempt_count} Application Attempt(s)"]
+        lines = [f"- {app_count} previous Application(s)", f"- {attempt_count} Closed Region Attempt(s)"]
         # 5) Append event lines until limit
         MAX = 1024
         field = ""
@@ -2314,8 +2315,8 @@ class RecruitmentCog(commands.Cog):
     @handle_interaction_errors
     async def app_accept_command(self, interaction: discord.Interaction):
         # Immediately defer so we can use followup responses
-        await interaction.response.defer(ephemeral=False)
-
+        await interaction.response.defer(thinking=True)
+        
         # Use followup.send for error responses (ephemeral)
         if not is_in_correct_guild(interaction):
             await interaction.followup.send("❌ Wrong guild!", ephemeral=True)
@@ -2345,7 +2346,7 @@ class RecruitmentCog(commands.Cog):
         if not app_data.get("recruiter_id"):
             await update_application_recruiter( str(interaction.channel.id), str(interaction.user.id))
             app_data["recruiter_id"] = str(interaction.user.id)
-            await interaction.followup.send("ℹ️ Application was unclaimed. It has now been claimed by you. \n *Processing the command, please wait*")
+            # await interaction.followup.send("ℹ️ Application was unclaimed. It has now been claimed by you. \n *Processing the command, please wait*")
 
         # Now do the "Trainee add" logic:
         applicant_id = int(app_data["applicant_id"])
@@ -2440,7 +2441,6 @@ class RecruitmentCog(commands.Cog):
         )
         acceptance_embed.add_field(name="Recruiter: ", value=f"<@{interaction.user.id}>", inline=False)
         acceptance_embed.set_footer(text="🔒 This thread is locked now.")
-        await interaction.followup.send(embed=acceptance_embed, ephemeral=False)
         
         dm_embed = discord.Embed(title=":white_check_mark: Your application as a S.W.A.T Trainee has been accepted!", description=":tada: Congratulations!\nYou’ve automatically received your Trainee role — the first step is complete!\n\n:pushpin: All additional information can be found in the #「:pushpin:」trainee-info channel.\nPlease make sure to carefully read through everything to get started on the right foot.\n\nWelcome aboard, and good luck on your journey!\n\n", colour=0x00c600)
         dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value=f"We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form]({FEEDBACK_FORM_LINK})\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
