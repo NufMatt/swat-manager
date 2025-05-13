@@ -40,6 +40,7 @@ class VerifyView(discord.ui.View):
     @discord.ui.button(label="🔄 Verify", style=discord.ButtonStyle.primary, custom_id="manual_verify")
     async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
         user = interaction.user
+        log(f"User {user.id} clicked the verify button.")
         # 1) guild + roles from cache
         guild = interaction.guild
         verified = self.cog.verified_role
@@ -47,13 +48,16 @@ class VerifyView(discord.ui.View):
         activity_ch = self.cog.activity_ch
         
         if verified in user.roles:
+            log(f"User {user.id} already has verified role.", level="warning")
             return await interaction.response.send_message(
                 "✅ You’re already verified!", ephemeral=True
             )
+            
         
         now = time.time()
         last = self.cooldowns.get(user.id, 0)
         if now - last < 300:
+            log(f"User {user.id} tried to press the button, but is on cooldown.")
             return await interaction.response.send_message(
                 "⚠️ Please wait before retrying verification.", ephemeral=True
             )
@@ -66,11 +70,14 @@ class VerifyView(discord.ui.View):
             status, member_data = await fetch_cnr_member(session, user.id, self.cog.account_token)
 
         if status == 200 and str(CHECK_CNR_VERIFIED_ROLE) in member_data.get("roles", []):
+            log(f"User {user.id} verified successfully.")
             # success: give role, remove guest
             try:
                 await user.add_roles(verified)
+                log(f"Assigned verified role to {user.id}.")
                 if guest in user.roles:
                     await user.remove_roles(guest)
+                    log(f"Removed guest role from {user.id}.")
             except discord.Forbidden:
                 log(f"⛔ Cannot assign roles to {user.id}", level="error")
 
@@ -80,7 +87,7 @@ class VerifyView(discord.ui.View):
             if activity_ch:
                 e = create_user_activity_log_embed(
                     "verification", "Manual verify succeeded", user,
-                    "User clicked Verify and passed."
+                    "User manually verified."
                 )
                 await activity_ch.send(embed=e)
 
@@ -89,12 +96,13 @@ class VerifyView(discord.ui.View):
                 "❌ Verification failed. Please make sure you have joined the CnR Discord and have the proper role there.",
                 ephemeral=True
             )
+            log(f"User {user.id} failed verification (status {status}).")
             if activity_ch:
                 e = create_user_activity_log_embed(
                     "verification",
                     "Manual verify failed",
                     user,
-                    "User clicked Verify and failed."
+                    "User tried to verify manually but failed."
                 )
                 await activity_ch.send(embed=e)
 
@@ -179,6 +187,7 @@ class VerificationCog(commands.Cog):
             0x3ec62f
         )
         embed.set_footer(text="S.W.A.T Verification Manager")
+        log(f"Sending new verify embed to {self.verify_ch.id}.")
         msg = await self.verify_ch.send(embed=embed, view=view)
         self.bot.add_view(view, message_id=msg.id)
         await set_stored_embed("verification_embed", msg.id, self.verify_ch.id)
@@ -217,6 +226,7 @@ class VerificationCog(commands.Cog):
                 f"Hey {data.get('nick', member.name)}, you have been successfully verified via our CnR database!",
                 0x1cd946
             )
+            log(f"Assigned verified role to {member.id}.")
             await self._safe_dm(m, embed)
             # log
             if act:
@@ -225,6 +235,7 @@ class VerificationCog(commands.Cog):
                     "Automatically verified on join."
                 )
                 await act.send(embed=e)
+                log(f"Logged verification for {member.id}.")
 
         # all failures funnel through here
         else:
@@ -239,9 +250,11 @@ class VerificationCog(commands.Cog):
                 0xf40000
             )
             await self._safe_dm(m, embed)
+            
             # give guest
             try:
                 await m.add_roles(gue)
+                log(f"Assigned guest role to {member.id}.")
             except:
                 log(f"Cannot assign guest to {member.id}", level="error")
            
@@ -261,6 +274,7 @@ class VerificationCog(commands.Cog):
                     reason
                 )
                 await act.send(embed=e)
+                log(f"Logged failed verification for {member.id}.")
 
     async def _safe_dm(self, member: discord.Member, embed: discord.Embed):
         try:
