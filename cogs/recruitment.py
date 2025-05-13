@@ -924,6 +924,7 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
         # Exclude the current application from history if needed
         filtered_history = [entry for entry in history if entry.get("thread_id") != str(thread.id)]
         has_history = len(filtered_history) > 0
+        complete_history_count = has_history + len(recent_attempts)
 
         # 1) Exclude the current application
         filtered_history = [
@@ -947,7 +948,7 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
         # 4) Prep header counts
         app_count = len(filtered_history)
         attempt_count = len(recent_attempts)
-        lines = [f"• {app_count} previous Application(s)", f"• {attempt_count} Application Attempt(s)"]
+        lines = [f"- {app_count} previous Application(s)", f"- {attempt_count} Application Attempt(s)"]
         # 5) Append event lines until limit
         MAX = 1024
         field = ""
@@ -964,12 +965,12 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
             value += "\n" + field
         else:
             value += "\nNone"
-            
-        embed.add_field(
-            name="⚠️ Internal Refs:",
-            value=value,
-            inline=False
-        )
+        if complete_history_count > 0:
+            embed.add_field(
+                name="⚠️ Internal Refs:",
+                value=value,
+                inline=False
+            )
 
         embed.add_field(
             name="⏳ Next Steps",
@@ -2831,33 +2832,63 @@ class RecruitmentCog(commands.Cog):
 
 
 
-    @app_commands.command(name="show_blacklists", description="Lists all active blacklists and timeouts.")
+    @app_commands.command(
+        name="show_restrictions",
+        description="Lists all active blacklists and timeouts."
+    )
     @handle_interaction_errors
-    async def show_blacklists(self, interaction: discord.Interaction):
-        # Check if the user issuing command is a Recruiter
-        recruiter_role = self.bot.resources.recruiter_role
-        if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.response.send_message("❌ You do not have permission to accept this application.", ephemeral=True)
-            return
-        
-        records = await get_all_timeouts( )
+    async def show_restrictions(self, interaction: discord.Interaction):
+        # 1) Permission check
+        recruiter = self.bot.resources.recruiter_role
+        if not recruiter or recruiter not in interaction.user.roles:
+            return await interaction.response.send_message(
+                "❌ You do not have permission to view this.", ephemeral=True
+            )
+
+        # 2) Fetch records
+        records = await get_all_timeouts()
         if not records:
-            await interaction.response.send_message("No active blacklists or timeouts.", ephemeral=True)
-            return
-        lines = []
+            return await interaction.response.send_message(
+                "✅ There are no active blacklists or timeouts.", ephemeral=True
+            )
+
+        # 3) Build the embed
+        embed = discord.Embed(
+            title="🚨 Active Blacklists & Timeouts",
+            color=discord.Color.dark_red()
+        )
+        guild = interaction.guild
+
         for rec in records:
+            user_id = int(rec["user_id"])
+            # Try to get Member, fallback to User
+            member = guild.get_member(user_id) or await interaction.client.fetch_user(user_id)
+            name    = member.display_name if hasattr(member, "display_name") else member.name
+
             if rec["type"] == "timeout":
-                expires_at = rec["expires_at"]
-                if isinstance(expires_at, str):
-                    expires_at = datetime.fromisoformat(expires_at)
-                exp_text = expires_at.strftime("%Y-%m-%d %H:%M") if expires_at else "N/A"
-                lines.append(f"User ID: {rec['user_id']} | Timeout until: {exp_text}")
-
+                # Parse expiration
+                exp = rec["expires_at"]
+                if isinstance(exp, str):
+                    exp = datetime.fromisoformat(exp) if exp else None
+                if exp:
+                    ts = d_timestamp(exp.isoformat(), "f")
+                    value = f"Timeout until {ts}"
+                    icon  = "⏰"
+                else:
+                    value = "Timeout until: N/A"
+                    icon  = "⏰"
             else:
-                lines.append(f"User ID: {rec['user_id']} | Blacklisted")
-        reply = "\n".join(lines)
-        await interaction.response.send_message(f"**Active Blacklists/Timeouts:**\n{reply}", ephemeral=True)
+                value = "User is blacklisted"
+                icon  = "🚫"
 
+            embed.add_field(
+                name=f"{icon} {user_id} — {name}",
+                value=value,
+                inline=False
+            )
+
+        # 4) Send
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     @app_commands.command(
         name="remove_restriction",
         description="Remove blacklist/timeout from a user by mention or by user ID."
