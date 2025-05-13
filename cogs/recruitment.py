@@ -2446,13 +2446,25 @@ class RecruitmentCog(commands.Cog):
         dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value=f"We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form]({FEEDBACK_FORM_LINK})\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
         
         # Send a DM to the applicant
+        dm_sent = True
         try:
             await member.send(embed=dm_embed)
         except discord.Forbidden:
-            log(f"Could not DM user {member.id} (Forbidden).", level="warning")
-        except discord.HTTPException as e:
-            log(f"HTTP error DMing user {member.id}: {e}", level="warning")   
-        
+            dm_sent = False
+        except discord.HTTPException:
+            dm_sent = False
+
+        # build your “accepted” embed…
+        if not dm_sent:
+            acceptance_embed.add_field(
+                name="⚠️ DM Failed",
+                value="Could not send acceptance DM (they may have DMs blocked).",
+                inline=False
+            )
+
+        await interaction.followup.send(embed=acceptance_embed)
+        # (optionally also an ephemeral: “⚠ Could not DM the user…”)
+
         activity_channel = self.resources.activity_ch
         if activity_channel:
             embed = create_user_activity_log_embed("recruitment", f"Application Accepted", interaction.user, f"User has accepted this application. (Thread ID: <#{interaction.channel.id}>)")
@@ -2695,16 +2707,25 @@ class RecruitmentCog(commands.Cog):
         dm_embed.add_field(name="", value="", inline=False)
         dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value=f"We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form]({FEEDBACK_FORM_LINK})\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
         
+          # after
+        dm_sent = True
         try:
             await applicant_user.send(embed=dm_embed)
         except discord.Forbidden:
-            pass
+            dm_sent = False
 
         denied_embed = discord.Embed(
             title="❌ Application Denied",
             description=f"**Reason:** {reason}\n**Reapply Info:** {reapply_info}",
             color=discord.Color.red()
         )
+        # if DM failed, add a note to the embed itself
+        if not dm_sent:
+            denied_embed.add_field(
+                name="⚠️ DM Failed",
+                value="Could not send a DM to the applicant; they may have DMs blocked.",
+                inline=False
+            )
         denied_embed.set_footer(text="🔒 This thread is locked now!")
         await interaction.followup.send(embed=denied_embed, ephemeral=False)
 
