@@ -693,7 +693,7 @@ class TraineeDetailsModal(discord.ui.Modal, title="Trainee Application Details")
         self.region = region
 
     ingame_name = discord.ui.TextInput(
-        label="In-Game Name",
+        label="In-Game Name (WITHOUT CREWTAGS)",
         placeholder="Enter your in-game name"
     )
     age = discord.ui.TextInput(
