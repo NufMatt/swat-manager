@@ -932,24 +932,31 @@ async def get_all_timeouts() -> list:
 # Tickets & LOA Reminder DB
 # -------------------------------
 
+
 async def init_ticket_db():
-    """Create the tickets table."""
+    """Create or migrate the tickets table, ensuring a ticket_done column exists."""
     try:
         async with get_db_connection() as conn:
-            await conn.execute(
-                """
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS tickets (
-                    thread_id   TEXT PRIMARY KEY,
-                    user_id     TEXT NOT NULL,
-                    created_at  TEXT NOT NULL,
-                    ticket_type TEXT NOT NULL
+                    thread_id    TEXT PRIMARY KEY,
+                    user_id      TEXT NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    ticket_type  TEXT NOT NULL
                 )
-                """
-            )
+            """)
             await conn.commit()
-            log("Ticket database initialized successfully.")
+
+            # add ticket_done column if it doesn't exist
+            cursor = await conn.execute("PRAGMA table_info(tickets)")
+            cols = [row[1] for row in await cursor.fetchall()]
+            if "ticket_done" not in cols:
+                await conn.execute("ALTER TABLE tickets ADD COLUMN ticket_done TEXT")
+                await conn.commit()
+
+        log("Ticket DB ready (migrated with ticket_done column).")
     except aiosqlite.Error as e:
-        log(f"Database init error for tickets: {e}", level="error")
+        log(f"Error migrating tickets table: {e}", level="error")
 
 async def init_loa_db():
     """Create the LOA reminders table."""
@@ -1141,3 +1148,75 @@ async def get_active_loa_reminders() -> List[Dict]:
             "end_date": end_date
         })
     return reminders
+
+# -------------------------------
+# Ticket-Done Scheduling Table
+# -------------------------------
+async def update_ticket_done(thread_id: str, done_at_iso: str):
+    """Mark a ticket as done at the given UTC ISO timestamp."""
+    try:
+        async with get_db_connection() as conn:
+            await conn.execute(
+                "UPDATE tickets SET ticket_done = ? WHERE thread_id = ?",
+                (done_at_iso, thread_id)
+            )
+            await conn.commit()
+        log(f"Ticket {thread_id} marked done at {done_at_iso}")
+    except aiosqlite.Error as e:
+        log(f"Error updating ticket_done: {e}", level="error")
+
+
+async def get_tickets_to_lock() -> list:
+    """
+    Return all thread_ids whose ticket_done ≤ (now – 24h).
+    """
+    cutoff = datetime.utcnow() - timedelta(minutes=1) ## CHANGE IN PRODUCTIOn
+    try:
+        async with get_db_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT thread_id, ticket_done FROM tickets WHERE ticket_done IS NOT NULL"
+            )
+            rows = await cursor.fetchall()
+
+        to_lock = []
+        for thread_id, done_iso in rows:
+            try:
+                if datetime.fromisoformat(done_iso) <= cutoff:
+                    to_lock.append(thread_id)
+            except ValueError:
+                continue
+        return to_lock
+
+    except aiosqlite.Error as e:
+        log(f"Error fetching tickets to lock: {e}", level="error")
+        return []
+
+
+async def get_ticket_done(thread_id: str) -> str | None:
+    """Fetch the ISO timestamp when this ticket was marked done (or None)."""
+    try:
+        async with get_db_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT ticket_done FROM tickets WHERE thread_id = ?",
+                (thread_id,)
+            )
+            row = await cursor.fetchone()
+        return row[0] if row and row[0] else None
+
+    except aiosqlite.Error as e:
+        log(f"Error querying ticket_done: {e}", level="error")
+        return None
+
+
+async def clear_ticket_done(thread_id: str):
+    """Unset the ticket_done flag (cancel auto-lock)."""
+    try:
+        async with get_db_connection() as conn:
+            await conn.execute(
+                "UPDATE tickets SET ticket_done = NULL WHERE thread_id = ?",
+                (thread_id,)
+            )
+            await conn.commit()
+        log(f"Cleared ticket_done for {thread_id}")
+    except aiosqlite.Error as e:
+        log(f"Error clearing ticket_done: {e}", level="error")

@@ -1,5 +1,6 @@
 # cogs/tickets.py
 
+from typing import Any
 import discord
 from discord import app_commands, ButtonStyle
 from discord.ext import commands, tasks
@@ -19,7 +20,7 @@ class CloseThreadView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Close Thread", style=ButtonStyle.danger, custom_id="ticket_close_button")
+    @discord.ui.button(label="Close Ticket", style=ButtonStyle.danger, custom_id="ticket_close_button")
     async def close_thread_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         thread = interaction.channel
         log(f"User {interaction.user.id} issued ticket_close in thread {thread.id if thread else 'None'}.")
@@ -228,6 +229,7 @@ class TicketCog(commands.Cog):
         self.bot.add_view(CloseThreadView())
         self.ensure_ticket_embed_task.start()
         self.loa_reminder_task.start()
+        self.ticket_done_task.start()
         log("Tickets cog fully initialized")
 
     def cog_unload(self):
@@ -493,6 +495,40 @@ class TicketCog(commands.Cog):
             # Only mark as sent after a successful send
             await mark_reminder_sent(thread_id)
 
+    @tasks.loop(seconds=30) ## CHANGE FOR PRODUCTION
+    async def ticket_done_task(self):
+        await self.bot.wait_until_ready()
+        for tid in await get_tickets_to_lock():
+            try:
+                # fetch or load the thread
+                thread = (
+                    self.bot.get_channel(int(tid))
+                    or await self.bot.fetch_channel(int(tid))
+                )
+                if not thread:
+                    continue
+
+                # 1) remove from tickets table (just like /ticket_close)
+                await remove_ticket(tid)
+
+                # 2) send the close embed
+                embed = discord.Embed(
+                    title="Ticket closed automatically",
+                    colour=0xf51616
+                )
+                embed.set_footer(text="🔒This ticket is locked now!")
+                await thread.send(embed=embed)
+
+                # 3) lock & archive thread
+                await thread.edit(locked=True, archived=True)
+                log(f"Ticket {tid} auto-closed and locked.")
+
+                # 4) clear the done flag so we don’t run again
+                await clear_ticket_done(tid)
+
+            except Exception as e:
+                log(f"Error auto-closing ticket {tid}: {e}", level="error")
+
     # -------------------------------
     # Existing Commands (unchanged)
     # -------------------------------
@@ -617,6 +653,60 @@ class TicketCog(commands.Cog):
             await interaction.response.send_message(f"❌ Failed to close thread: {e}", ephemeral=True)
             log(f"Error closing thread: {e}", level="error")
 
+    @app_commands.command(
+        name="ticket_done",
+        description="Mark this ticket as done; it will auto-lock in 24 hours."
+    )
+    async def ticket_done(self, interaction: discord.Interaction):
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            return await interaction.response.send_message(
+                "❌ Use this inside a ticket thread.", ephemeral=True
+            )
+        if not interaction.guild or interaction.guild.id != GUILD_ID:
+            return await interaction.response.send_message(
+                "❌ This command can only be used here.", ephemeral=True
+            )
+
+        ticket_data = await get_ticket_info(str(thread.id))
+        if not ticket_data:
+            return await interaction.response.send_message(
+                "❌ This thread isn’t a registered ticket.", ephemeral=True
+            )
+
+        opener_id = ticket_data[1]
+        leadership = interaction.client.resources.leadership_role
+        if interaction.user.id != int(opener_id) and leadership not in interaction.user.roles:
+            return await interaction.response.send_message(
+                "❌ You don’t have permission to mark this done.", ephemeral=True
+            )
+
+        # schedule lock 24 h from now
+        done_iso = datetime.utcnow().isoformat()
+        await update_ticket_done(str(thread.id), done_iso)
+        embed = discord.Embed(title="✅ Ticket marked as done!",
+                            description="🔒This ticket will auto-lock in 24 hours.\nYou can still close it immediately with the button below.",
+                            colour=0x00d500)
+        embed.set_footer(text="⌨️Writing in this ticket will cancel the automatic closing!")
+        await interaction.response.send_message(embed=embed, view=CloseThreadView())
+
+
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        # ignore bots & non-threads
+        if message.author.bot or not isinstance(message.channel, discord.Thread):
+            return
+
+        tid = str(message.channel.id)
+        if await get_ticket_done(tid):
+            await clear_ticket_done(tid)
+            embed = discord.Embed(title="❌ Ticket done canceled due to activity in the thread!",
+                                colour=0xff0000)
+            await message.channel.send(embed=embed)
+
+            
+    
 async def setup(bot: commands.Bot):
     await bot.add_cog(TicketCog(bot))
     log("Tickets cog loaded.")
