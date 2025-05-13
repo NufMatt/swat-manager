@@ -921,21 +921,56 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
         embed.add_field(name="🚪 Previous Crews", value=f"```{previous_crews or 'N/A'}```", inline=True)
         # Exclude the current application from history if needed
         # (Assuming you have a way to identify the current application's record)
+        # Exclude the current application from history if needed
         filtered_history = [entry for entry in history if entry.get("thread_id") != str(thread.id)]
         has_history = len(filtered_history) > 0
 
-        if has_history or recent_attempts:
-            int_refs = ""
-            if has_history:
-                # Optionally, add details about previous applications
-                int_refs += f"- {len(filtered_history)} previous application(s)\n"
-            for att in recent_attempts:
-                int_refs += f"- [Log Entry]({att['log_url']})\n"
-            embed.add_field(
-                name="⚠️ Internal Refs:",
-                value=int_refs,
-                inline=False
-            )
+        # 1) Exclude the current application
+        filtered_history = [
+            entry for entry in history
+            if entry.get("thread_id") != str(thread.id)
+        ]
+        # 2) Build unified list of events
+        events = []
+        for entry in filtered_history:
+            ts = entry["timestamp"]
+            url = f"https://discord.com/channels/{GUILD_ID}/{entry['thread_id']}"
+            events.append((ts, f"- [Application]({url})"))
+        for att in recent_attempts:
+            ts = att["timestamp"]
+            url = att["log_url"]
+            events.append((ts, f"- [Log Entry]({url})"))
+
+        # 3) Sort chronologically (oldest first)
+        events.sort(key=lambda e: e[0])
+
+        # 4) Prep header counts
+        app_count = len(filtered_history)
+        attempt_count = len(recent_attempts)
+        lines = [f"• {app_count} previous Application(s)", f"• {attempt_count} Application Attempt(s)"]
+        # 5) Append event lines until limit
+        MAX = 1024
+        field = ""
+        for _, line in events:
+            candidate = field + line + "\n"
+            if len(candidate) > MAX:
+                field += "..."
+                break
+            field = candidate
+
+        # 6) Put header + events into the field
+        value = "\n".join(lines)
+        if field:
+            value += "\n" + field
+        else:
+            value += "\nNone"
+            
+        embed.add_field(
+            name="⚠️ Internal Refs:",
+            value=value,
+            inline=False
+        )
+
         embed.add_field(
             name="⏳ Next Steps",
             value=(
@@ -3071,6 +3106,7 @@ class RecruitmentCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+
     @app_commands.command(
         name="app_history",
         description="Show all application attempts for a user (by mention or by user ID)."
@@ -3086,16 +3122,17 @@ class RecruitmentCog(commands.Cog):
         target: discord.User = None,
         user_id: str = None
     ):
-        # Must supply exactly one
-        if (target is None and user_id is None) or (target is not None and user_id is not None):
+        # 1) Validate exactly one of target or user_id
+        if (target is None) == (user_id is None):
             return await interaction.response.send_message(
                 "❌ Please specify **exactly one** of `target` (mention) or `user_id`.",
                 ephemeral=True
             )
 
-        # Resolve the numeric ID
+        # 2) Resolve lookup_id and user object
         if target:
             lookup_id = target.id
+            lookup_user = target
         else:
             try:
                 lookup_id = int(user_id)
@@ -3104,8 +3141,9 @@ class RecruitmentCog(commands.Cog):
                     "❌ `user_id` must be a valid integer.",
                     ephemeral=True
                 )
+            lookup_user = interaction.client.get_user(lookup_id) or await interaction.client.fetch_user(lookup_id)
 
-        # Permission check: only recruiters/leadership
+        # 3) Permission check
         guild = interaction.client.get_guild(GUILD_ID)
         recruiter_role = self.resources.recruiter_role if guild else None
         if not recruiter_role or recruiter_role not in interaction.user.roles:
@@ -3114,48 +3152,51 @@ class RecruitmentCog(commands.Cog):
                 ephemeral=True
             )
 
-        # Fetch history
-        history = await get_application_history( str(lookup_id))
+        # 4) Fetch history
+        history = await get_application_history(str(lookup_id))
         if not history:
             return await interaction.response.send_message(
-                f"No application history found for <@{lookup_id}>.",
+                f"No application history found for {lookup_user.mention}.",
                 ephemeral=True
             )
 
-        # Build the embed
+        # 5) Build lines
+        type_icons   = {"submission": "📥", "attempt": "🔍"}
+        status_icons = {"accepted": "✅", "denied": "❌", "withdrawn": "🔁", "open": "📁"}
         lines = []
-        type_emojis = {"submission": "📥", "attempt": "🔍"}
-        status_emojis = {"accepted": "✅", "denied": "❌", "withdrawn": "⚠️", "open": "🟢"}
+        # assume submissions now include entry["thread_id"], attempts have entry["details"] with a [Log Entry](url)
+        for entry in sorted(history, key=lambda e: e["timestamp"]):
+            # timestamp
+            ts_tag = d_timestamp(entry["timestamp"], "f")
+            t_icon = type_icons.get(entry["type"], "")
+            s_icon = status_icons.get(entry["status"].lower(), "")
+            if entry["type"] == "submission":
+                thread_id = entry["thread_id"]
+                thread_url = f"https://discord.com/channels/{GUILD_ID}/{thread_id}"
+                detail = entry["details"]  # "IGN: X, Region: Y"
+                line = f"{t_icon} {ts_tag} • Application • {s_icon} • [Thread]({thread_url}) • `{detail}`"
+            else:
+                # entry["details"] already contains "Region: X[, [Log Entry](url)]"
+                line = f"{t_icon} {ts_tag} • Attempt • {s_icon} • `{entry['details']}`"
+            lines.append(line)
 
-        for entry in history:
-            # format timestamp
-            try:
-                dt = datetime.fromisoformat(entry["timestamp"])
-                ts = dt.strftime("%Y-%m-%d %H:%M")
-            except:
-                ts = entry["timestamp"]
-            t_emoji = type_emojis.get(entry["type"], "")
-            s_emoji = status_emojis.get(entry["status"].lower(), "")
-            lines.append(
-                f"{t_emoji} **{ts}**\n"
-                f"Type: *{entry['type'].capitalize()}* | Status: {s_emoji} **{entry['status'].capitalize()}**\n"
-                f"Details: {entry['details']}\n"
-                "────────────────────"
-            )
+        # 6) Truncate if over Discord's 4096 limit
+        desc = ""
+        for ln in lines:
+            candidate = desc + ln + "\n"
+            if len(candidate) > 4090:
+                desc += "…\n"
+                break
+            desc = candidate
 
-        desc = "\n".join(lines)
-        if len(desc) > 4096:
-            desc = desc[:4093] + "..."
-
+        # 7) Send embed
         embed = discord.Embed(
-            title=f"📜 Application History for <@{lookup_id}>",
-            description=desc,
+            title=f"📜 Application History for {lookup_user.display_name}",
+            description=desc or "No entries.",
             color=discord.Color.green()
         )
-        embed.set_footer(text="Timestamps are local (YYYY-MM-DD HH:MM)")
+        embed.set_footer(text="Application: 📥, Attempt: 🔍; Accepted: ✅, Denied: ❌, Withdrawn: 🔁, Open: 📁")
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
 
     @app_commands.command(name="app_silence", description="Toggle silence for notifications in this application thread.")
     @handle_interaction_errors

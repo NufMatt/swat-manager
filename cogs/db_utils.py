@@ -771,15 +771,20 @@ async def get_application_history(applicant_id: str) -> list:
         async with get_db_connection() as conn:
             cursor = await conn.cursor()
             await cursor.execute(
-                "SELECT starttime, status, ingame_name, region FROM application_threads WHERE applicant_id = ?",
+                """
+                SELECT thread_id, starttime, status, ingame_name, region
+                FROM application_threads
+                WHERE applicant_id = ?
+                """,
                 (applicant_id,)
             )
             for row in await cursor.fetchall():
                 history.append({
-                    "timestamp": row[0],
-                    "status": row[1],
+                    "thread_id": row[0],                # ← new
+                    "timestamp": row[1],
+                    "status": row[2],
                     "type": "submission",
-                    "details": f"IGN: {row[2]}, Region: {row[3]}"
+                    "details": f"IGN: {row[3]}, Region: {row[4]}"
                 })
             await cursor.execute(
                 "SELECT timestamp, status, region, log_url FROM application_attempts WHERE applicant_id = ?",
@@ -790,6 +795,7 @@ async def get_application_history(applicant_id: str) -> list:
                 if row[3]:
                     details += f", [Log Entry]({row[3]})"
                 history.append({
+                    
                     "timestamp": row[0],
                     "status": row[1],
                     "type": "attempt",
@@ -1170,7 +1176,7 @@ async def get_tickets_to_lock() -> list:
     """
     Return all thread_ids whose ticket_done ≤ (now – 24h).
     """
-    cutoff = datetime.utcnow() - timedelta(minutes=1) ## CHANGE IN PRODUCTIOn
+    cutoff = datetime.utcnow() - timedelta(hours=24) ## CHANGE IN PRODUCTIOn
     try:
         async with get_db_connection() as conn:
             cursor = await conn.execute(

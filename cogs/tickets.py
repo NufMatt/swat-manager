@@ -461,6 +461,77 @@ class TicketCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @app_commands.command(
+        name="loa_custom",
+        description="Override the LOA end date, accept the request, schedule the reminder, and close the thread."
+    )
+    @app_commands.describe(
+        date="New end date in DD-MM-YYYY format"
+    )
+    async def loa_custom(self, interaction: discord.Interaction, date: str):
+        thread = interaction.channel
+        # 1) Must be in a thread
+        if not isinstance(thread, discord.Thread):
+            return await interaction.response.send_message(
+                "❌ Use this inside a LOA thread.", ephemeral=True
+            )
+
+        # 2) Only leadership
+        leadership = interaction.client.resources.leadership_role
+        if leadership not in interaction.user.roles:
+            return await interaction.response.send_message(
+                "❌ Only leadership can override an LOA.", ephemeral=True
+            )
+
+        # 3) Must be a LOA ticket
+        ticket = await get_ticket_info(str(thread.id))
+        if not ticket or ticket[3] != "loa":
+            return await interaction.response.send_message(
+                "❌ This is not a LOA ticket.", ephemeral=True
+            )
+
+        # 4) Parse the new date
+        from datetime import datetime
+        try:
+            new_dt = datetime.strptime(date, "%d-%m-%Y").date()
+        except ValueError:
+            return await interaction.response.send_message(
+                "❌ Invalid date format. Please use DD-MM-YYYY.", ephemeral=True
+            )
+        if new_dt < datetime.utcnow().date():
+            return await interaction.response.send_message(
+                "❌ End date cannot be in the past.", ephemeral=True
+            )
+
+        # 5) Update the embed in the thread to show the new date
+        import re
+        async for msg in thread.history(limit=10):
+            if msg.author == interaction.client.user and msg.embeds:
+                emb = msg.embeds[0]
+                # Replace the line that starts with "**End Date:**"
+                new_description = re.sub(
+                    r"(\*\*End Date:\*\*\s*)\d{2}-\d{2}-\d{4}",
+                    rf"\1{date}",
+                    emb.description or ""
+                )
+                emb.description = new_description
+                await msg.edit(embed=emb)
+                break
+
+        # 6) Schedule the LOA reminder (same as loa_accept)
+        new_iso = new_dt.isoformat()
+        await add_loa_reminder(str(thread.id), ticket[1], new_iso)
+
+        # 7) Confirm+close thread
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title=f"✅ LOA end date updated to {date} and reminder scheduled.",
+                colour=0x1dcb2e
+            ),
+            ephemeral=False
+        )
+        await thread.edit(archived=True, locked=False)
+
     # -------------------------------
     # LOA Expiration Background Task
     # -------------------------------
@@ -495,7 +566,7 @@ class TicketCog(commands.Cog):
             # Only mark as sent after a successful send
             await mark_reminder_sent(thread_id)
 
-    @tasks.loop(seconds=30) ## CHANGE FOR PRODUCTION
+    @tasks.loop(minutes=5) ## CHANGE FOR PRODUCTION
     async def ticket_done_task(self):
         await self.bot.wait_until_ready()
         for tid in await get_tickets_to_lock():
