@@ -15,6 +15,7 @@ STATUS_CHANNEL_ID     = 1320463232128913551  # Changed
 TICKET_CHANNEL_ID     = 1334880226089500732  # Changed
 APPLY_CHANNEL_ID      = 1350481022734696468
 ACTIVITY_CHANNEL_ID   = 1350858506344988732
+VERIFY_CHANNEL_ID    = 1370348937126613012  # Changed
 
 # -----------------------
 # ROLE IDS
@@ -66,8 +67,8 @@ SWAT_WEBSITE_TOKEN_FILE = "website-api-key.txt"
 SEND_API_DATA = False
 
 API_URLS = {
-    "SEA": "https://api.gtacnr.net/cnr/players?serverId=SEA",
-    "NA3": "https://api.gtacnr.net/cnr/players?serverId=US3",
+    #"SEA": "https://api.gtacnr.net/cnr/players?serverId=SEA",
+    #"NA3": "https://api.gtacnr.net/cnr/players?serverId=US3",
     "NA2": "https://api.gtacnr.net/cnr/players?serverId=US2",
     "NA1": "https://api.gtacnr.net/cnr/players?serverId=US1",
     "EU2": "https://api.gtacnr.net/cnr/players?serverId=EU2",
@@ -79,8 +80,8 @@ API_URLS_FIVEM = {
     "EU2": "https://109.61.89.213:30121/info.json",
     "NA1": "https://212.102.58.130:30120/info.json",
     "NA2": "https://212.102.58.130:30121/info.json",
-    "NA3": "https://45.88.228.198:30122/info.json",
-    "SEA": "https://51.79.231.52:30130/info.json",
+    #"NA3": "https://45.88.228.198:30122/info.json",
+    #"SEA": "https://51.79.231.52:30130/info.json",
 }
 
 RANK_HIERARCHY = [

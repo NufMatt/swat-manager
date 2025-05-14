@@ -2,8 +2,10 @@ import discord
 from config import *
 import logging
 import inspect
-from datetime import datetime
+import aiosqlite
+from datetime import datetime, timezone
 from typing import Optional, Dict
+import pytz
 DATABASE_FILE = "data.db"
 
 # 1) Generate a log file name based on date/time
@@ -84,68 +86,42 @@ def create_user_activity_log_embed(type: str, action: str, user: discord.Member,
 
     return embed
 
-def init_stored_embeds_db():
-    import sqlite3
+async def init_stored_embeds_db():
+    """
+    Initialize the stored_embeds table in the database if it doesn't exist.
+    """
     try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS stored_embeds (
-                embed_key TEXT PRIMARY KEY,
-                message_id TEXT NOT NULL,
-                channel_id TEXT NOT NULL
+        async with aiosqlite.connect(DATABASE_FILE) as db:
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stored_embeds (
+                    embed_key   TEXT PRIMARY KEY,
+                    message_id  TEXT NOT NULL,
+                    channel_id  TEXT NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.commit()
+            await db.commit()
         log("Stored embeds DB initialized successfully.")
     except Exception as e:
         log(f"Stored embeds DB Error: {e}", level="error")
-    finally:
-        conn.close()
-        
-init_stored_embeds_db()
 
 
-def set_stored_embed(embed_key: str, message_id: str, channel_id: str) -> bool:
-    import sqlite3
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
+async def get_stored_embed(embed_key: str) -> Optional[Dict]:
+    async with aiosqlite.connect(DATABASE_FILE) as db:
+        async with db.execute(
+            "SELECT message_id, channel_id FROM stored_embeds WHERE embed_key = ?", (embed_key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+    return {"message_id": row[0], "channel_id": row[1]} if row else None
+
+async def set_stored_embed(embed_key: str, message_id: int, channel_id: int):
+    async with aiosqlite.connect(DATABASE_FILE) as db:
+        await db.execute("""
             INSERT OR REPLACE INTO stored_embeds (embed_key, message_id, channel_id)
-            VALUES (?, ?, ?)
-            """,
-            (embed_key, message_id, channel_id)
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        log(f"DB Error (set_stored_embed): {e}", level="error")
-        return False
-    finally:
-        conn.close()
-
-def get_stored_embed(embed_key: str) -> Optional[Dict]:
-    import sqlite3
-    try:
-        conn = sqlite3.connect(DATABASE_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT message_id, channel_id FROM stored_embeds WHERE embed_key = ?",
-            (embed_key,)
-        )
-        row = cursor.fetchone()
-        if row:
-            return {"message_id": row[0], "channel_id": row[1]}
-        return None
-    except Exception as e:
-        log(f"DB Error (get_stored_embed): {e}", level="error")
-        return None
-    finally:
-        conn.close()
+            VALUES (?,?,?)
+        """, (embed_key, message_id, channel_id))
+        await db.commit()
 
 def remove_stored_embed(embed_key: str) -> bool:
     import sqlite3
@@ -160,3 +136,27 @@ def remove_stored_embed(embed_key: str) -> bool:
         return False
     finally:
         conn.close()
+        return False
+
+def d_timestamp(iso_str: str, style: str = "") -> str:
+    """
+    Convert an ISO-format datetime string into a Discord timestamp tag,
+    treating naïve datetimes as Europe/Berlin local time via pytz.
+    """
+    # 1) Parse ISO; handle trailing 'Z' if needed
+    try:
+        dt = datetime.fromisoformat(iso_str)
+    except ValueError:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+
+    # 2) If no tzinfo, assume Europe/Berlin
+    if dt.tzinfo is None:
+        berlin = pytz.timezone("Europe/Berlin")
+        dt = berlin.localize(dt)
+
+    # 3) Convert to UTC
+    dt_utc = dt.astimezone(pytz.utc)
+
+    # 4) Build Discord tag
+    unix_ts = int(dt_utc.timestamp())
+    return f"<t:{unix_ts}:{style}>" if style else f"<t:{unix_ts}>"
