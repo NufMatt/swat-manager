@@ -1,8 +1,8 @@
 # cogs/player_list.py
-
 import discord
 from discord.ext import tasks, commands
-import requests, json, asyncio, aiohttp, re, pytz, sqlite3
+import requests, json, asyncio, aiohttp, re, pytz, aiosqlite
+from aiohttp import ContentTypeError
 from datetime import datetime, timedelta
 import io
 from config import *
@@ -17,115 +17,169 @@ class PlayerListCog(commands.Cog):
         self.bot = bot
         # Cache for Discord members
         self.discord_cache = {"timestamp": None, "members": {}}
+        self.queue_cache = {
+            "timestamp": None,   # when we last fetched
+            "data":      None    # what we got
+        }
         # Dictionary to track server unreachable state for each region.
         self._server_unreachable = {}
-        # Initialize database connection for playtime and name changes logging.
-        self.db_conn = sqlite3.connect("player_logs.db")
-        self.db_conn.row_factory = sqlite3.Row
-        self.setup_database()
+        # Placeholder for aiosqlite connection
+        self.db_conn = None
+        # Single shared HTTP session
+        self.http: aiohttp.ClientSession = None
         # For playtime increment calculation.
         self.last_update_time = None
+        # A lock to enforce 1 s between each external request
+        self.rate_limit_lock = asyncio.Lock()
+        # Kick off initialization (DB + HTTP + starts loops)
+        self.bot.loop.create_task(self.init_database())
+
+
+
+    async def init_database(self):
+        """Initialize aiosqlite DB connection, HTTP session, setup tables, then start loops."""
+        # DB
+        self.db_conn = await aiosqlite.connect("player_logs.db")
+        self.db_conn.row_factory = aiosqlite.Row
+        await self.setup_database()
+        # HTTP
+        self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5))
+        # Now safe to start background loops
         self.update_game_status.start()
         self.send_unique_count.start()
 
-    def setup_database(self):
+
+    async def setup_database(self):
         """Creates the necessary tables if they do not exist."""
-        cur = self.db_conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS players_info (
-                uid TEXT PRIMARY KEY,
-                current_name TEXT,
-                last_login TEXT,
-                total_playtime REAL
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS playtime_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                uid TEXT,
-                log_time TEXT,
-                seconds REAL
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS name_changes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                uid TEXT,
-                old_name TEXT,
-                new_name TEXT,
-                change_time TEXT
-            )
-        """)
-        self.db_conn.commit()
+        async with self.db_conn.cursor() as cur:
+            await cur.execute("""
+                CREATE TABLE IF NOT EXISTS players_info (
+                    uid TEXT PRIMARY KEY,
+                    current_name TEXT,
+                    last_login TEXT,
+                    total_playtime REAL
+                )
+            """)
+            await cur.execute("""
+                CREATE TABLE IF NOT EXISTS playtime_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    uid TEXT,
+                    log_time TEXT,
+                    seconds REAL
+                )
+            """)
+            await cur.execute("""
+                CREATE TABLE IF NOT EXISTS name_changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    uid TEXT,
+                    old_name TEXT,
+                    new_name TEXT,
+                    change_time TEXT
+                )
+            """)
+        await self.db_conn.commit()
 
     def cog_unload(self):
         self.update_game_status.cancel()
-        # Close database connection when cog is unloaded.
-        self.db_conn.close()
+        # Close DB
+        if self.db_conn:
+            self.bot.loop.create_task(self.db_conn.close())
+        # Close HTTP session
+        if self.http and not self.http.closed:
+            self.bot.loop.create_task(self.http.close())
 
-    async def fetch_players(self, region):
-        if USE_LOCAL_JSON:
-            try:
-                with open(LOCAL_JSON_FILE, "r", encoding="utf-8") as file:
-                    return json.load(file)
-            except Exception as e:
-                log(f"Error reading local JSON for region {region}: {e}", level="error")
-                return []
+
+    async def fetch_players(self, region: str):
+        """
+        Fetch the player list for `region`, but serialised behind the same lock
+        and decoding as UTF-8 (with errors replaced) to avoid charmap decode errors.
+        """
         url = API_URLS.get(region)
         if not url:
             log(f"No API URL defined for region {region}.", level="error")
-            return []
+            return None
+
         try:
-            await asyncio.sleep(1)
-            timeout = aiohttp.ClientTimeout(total=5)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url) as resp:
+            async with self.rate_limit_lock:
+                async with self.http.get(url) as resp:
                     resp.raise_for_status()
-                    text = await resp.text(encoding='utf-8')
-                    data = json.loads(text)
-                    return data
-        except asyncio.TimeoutError:
-            log(f"Timeout fetching API data for region {region}", level="error")
-            return None
-        except aiohttp.ClientError as e:
-            log(f"Client error fetching API data for region {region}: {e}", level="error")
+                    # read raw bytes, then decode as utf-8 (replace on errors)
+                    raw = await resp.read()
+                # release lock after read + throttle
+                await asyncio.sleep(1)
+
+            # now decode & parse JSON
+            text = raw.decode("utf-8", errors="replace")
+            return json.loads(text)
+
+        except Exception as e:
+            # logs both 429 and other errors
+            code = getattr(e, "status", 0)
+            log(f"Error fetching players for {region}: {code}, {e}", level="error")
             return None
 
-    async def getqueuedata(self):
+
+
+    async def fetch_queue(self) -> dict:
+        """
+        Fetch queue info—but serialise it behind self.rate_limit_lock,
+        parse JSON from text to avoid mimetype checks, and wait 1s before releasing.
+        """
+        url = "https://api.gtacnr.net/cnr/servers"
         try:
-            r = requests.get("https://api.gtacnr.net/cnr/servers", timeout=3)
-            r.encoding = 'utf-8'
-            r.raise_for_status()
-            data = json.loads(r.text)
-            queue_info = {entry["Id"]: entry for entry in data}
-            if "US1" in queue_info:
-                queue_info["NA1"] = queue_info.pop("US1")
-            if "US2" in queue_info:
-                queue_info["NA2"] = queue_info.pop("US2")
-            if "US3" in queue_info:
-                queue_info["NA3"] = queue_info.pop("US3")
-            return queue_info
-        except requests.Timeout:
-            log("Timeout fetching queue data.", level="error")
-            return None
-        except requests.RequestException as e:
+            async with self.rate_limit_lock:
+                async with self.http.get(url) as resp:
+                    resp.raise_for_status()
+                    # read raw text and parse, ignoring Content-Type header
+                    text = await resp.text()
+                    data = json.loads(text)
+                # enforce at least 1s between external calls
+                await asyncio.sleep(1)
+        except ContentTypeError:
+            # fallback if aiohttp still complains
+            text = await resp.text()
+            data = json.loads(text)
+        except Exception as e:
             log(f"Error fetching queue data: {e}", level="error")
+            return {}
+
+        # remap US→NA
+        queue_info = {entry["Id"]: entry for entry in data}
+        for old, new in [("US1","NA1"),("US2","NA2"),("US3","NA3")]:
+            if old in queue_info:
+                queue_info[new] = queue_info.pop(old)
+        return queue_info
+
+    async def get_cached_queue(self) -> dict:
+        """
+        Return cached queue info if it's fresh; otherwise fetch & cache it once.
+        """
+        now = datetime.utcnow()
+        # Only refresh if we've never fetched, or if more than CHECK_INTERVAL has passed
+        if (
+            self.queue_cache["timestamp"] is None
+            or now - self.queue_cache["timestamp"] > timedelta(seconds=CHECK_INTERVAL)
+        ):
+            # Fetch and store
+            self.queue_cache["data"] = await self.fetch_queue()
+            self.queue_cache["timestamp"] = now
+        return self.queue_cache["data"]
+
+
+    async def fetch_fivem(self, region: str):
+        url = API_URLS_FIVEM.get(region)
+        if not url:
             return None
 
-    async def get_fivem_data(self):
-        fivem_data = {}
-        async with aiohttp.ClientSession() as session:
-            for region, url in API_URLS_FIVEM.items():
-                try:
-                    async with session.get(url, ssl=False, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                        response.raise_for_status()
-                        text = await response.text(encoding='utf-8')
-                        fivem_data[region] = json.loads(text)
-                        await asyncio.sleep(1.5)
-                except Exception as e:
-                    log(f"Warning fetching FiveM data for {region}: {e}", level="warning")
-                    fivem_data[region] = None
-        return fivem_data
+        try:
+            async with self.http.get(url, ssl=False) as resp:
+                resp.raise_for_status()
+                text = await resp.text(encoding="utf-8")
+                return json.loads(text)
+        except Exception as e:
+            log(f"Error fetching FiveM data for {region}: {e}", level="warning")
+            return None
+
 
     async def update_discord_cache(self):
         now = datetime.now()
@@ -239,207 +293,261 @@ class PlayerListCog(commands.Cog):
         embed.timestamp = datetime.now()
         return embed
 
-    def log_player_data(self, uid: str, username: str, observed_time: str, increment: float):
+    async def log_player_data(self, uid: str, username: str, observed_time: str, increment: float):
         """
         Logs playtime and name changes for a given player.
         Instead of using the API timestamp, it now uses the observed time.
         The increment is the actual elapsed time (in seconds) since the last update.
         """
         try:
-            cur = self.db_conn.cursor()
-            cur.execute("SELECT * FROM players_info WHERE uid = ?", (uid,))
-            row = cur.fetchone()
-            if row is None:
-                cur.execute("""
-                    INSERT INTO players_info (uid, current_name, last_login, total_playtime)
-                    VALUES (?, ?, ?, ?)
-                """, (uid, username, observed_time, increment))
-            else:
-                if row["current_name"].lower() != username.lower():
-                    cur.execute("""
-                        INSERT INTO name_changes (uid, old_name, new_name, change_time)
+            async with self.db_conn.cursor() as cur:
+                await cur.execute("SELECT * FROM players_info WHERE uid = ?", (uid,))
+                row = await cur.fetchone()
+                if row is None:
+                    await cur.execute(
+                        """
+                        INSERT INTO players_info (uid, current_name, last_login, total_playtime)
                         VALUES (?, ?, ?, ?)
-                    """, (uid, row["current_name"], username, observed_time))
-                    cur.execute("""
-                        UPDATE players_info SET current_name = ?, last_login = ?
-                        WHERE uid = ?
-                    """, (username, observed_time, uid))
+                        """,
+                        (uid, username, observed_time, increment)
+                    )
                 else:
-                    cur.execute("""
-                        UPDATE players_info SET last_login = ?
+                    if row["current_name"].lower() != username.lower():
+                        await cur.execute(
+                            """
+                            INSERT INTO name_changes (uid, old_name, new_name, change_time)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (uid, row["current_name"], username, observed_time)
+                        )
+                        await cur.execute(
+                            """
+                            UPDATE players_info SET current_name = ?, last_login = ?
+                            WHERE uid = ?
+                            """,
+                            (username, observed_time, uid)
+                        )
+                    else:
+                        await cur.execute(
+                            """
+                            UPDATE players_info SET last_login = ?
+                            WHERE uid = ?
+                            """,
+                            (observed_time, uid)
+                        )
+                    await cur.execute(
+                        """
+                        UPDATE players_info SET total_playtime = total_playtime + ?
                         WHERE uid = ?
-                    """, (observed_time, uid))
-                cur.execute("""
-                    UPDATE players_info SET total_playtime = total_playtime + ?
-                    WHERE uid = ?
-                """, (increment, uid))
-            cur.execute("""
-                INSERT INTO playtime_log (uid, log_time, seconds)
-                VALUES (?, ?, ?)
-            """, (uid, observed_time, increment))
-            self.db_conn.commit()
+                        """,
+                        (increment, uid)
+                    )
+                await cur.execute(
+                    """
+                    INSERT INTO playtime_log (uid, log_time, seconds)
+                    VALUES (?, ?, ?)
+                    """,
+                    (uid, observed_time, increment)
+                )
+            await self.db_conn.commit()
         except Exception as e:
             log(f"Error logging player data for uid {uid}: {e}", level="error")
 
     @tasks.loop(seconds=CHECK_INTERVAL)
     async def update_game_status(self):
+        """
+        One‐by‐one updating: refresh discord cache, get queue *once*, then
+        for each region fetch players/FiveM, log playtime, build & send/edit embed.
+        """
         await self.bot.wait_until_ready()
-        loop_start = datetime.utcnow()
+        now_utc = datetime.utcnow()
 
+        # 1) Refresh Discord member cache
         await self.update_discord_cache()
-        queue_data = await self.getqueuedata()
-        fivem_data = await self.get_fivem_data()
-        regions = list(API_URLS.keys())
-        results = []
-        for region in regions:
-            players = await self.fetch_players(region)
-            results.append(players)
-            await asyncio.sleep(1)
-        region_players_map = dict(zip(regions, results))
+
+        # 2) Fetch (or re‐use) the queue data once
+        queue_info = await self.get_cached_queue()
+
+        # 3) Get the status channel
         channel = self.bot.get_channel(STATUS_CHANNEL_ID)
         if not channel:
             log(f"Status channel {STATUS_CHANNEL_ID} not found.", level="error")
             return
 
-        # Calculate the actual elapsed time since the last update.
-        current_loop_time = datetime.utcnow()
-        if self.last_update_time is not None:
-            increment = (current_loop_time - self.last_update_time).total_seconds()
-        else:
-            increment = CHECK_INTERVAL
-        self.last_update_time = current_loop_time
-        observed_time = current_loop_time.isoformat()
+        # 4) Compute elapsed seconds since last run
+        increment = (
+            (now_utc - self.last_update_time).total_seconds()
+            if self.last_update_time
+            else CHECK_INTERVAL
+        )
+        self.last_update_time = now_utc
+        observed_time = now_utc.isoformat()
 
-        for region in regions:
-            players = region_players_map[region]
-            if players and isinstance(players, list):
-                seen_uids = set()
+        # 5) Process each region serially
+        for region in API_URLS.keys():
+            # a) Fetch the player list and FiveM info
+            players   = await self.fetch_players(region)
+            fivem_dat = await self.fetch_fivem(region)
+
+            # b) Log playtime for each unique player
+            if isinstance(players, list):
+                seen = set()
                 for pl in players:
                     uid = pl["Uid"]
-                    if uid in seen_uids:
+                    if uid in seen:
                         continue
-                    seen_uids.add(uid)
-                    username = pl["Username"]["Username"]
-                    # Log with the observed time and actual elapsed increment.
-                    self.log_player_data(uid, username, observed_time, increment)
-            matching_players = [] if players else None
+                    seen.add(uid)
+                    await self.log_player_data(
+                        uid,
+                        pl["Username"]["Username"],
+                        observed_time,
+                        increment
+                    )
+
+            # c) Build matching_players list by cross‐referencing Discord cache
+            matching_players = [] if players is not None else None
             if isinstance(players, list):
-                matching_players = []
                 for pl in players:
                     username = pl["Username"]["Username"]
+                    # avoid duplicates
                     if any(mp["username"] == username for mp in matching_players):
                         continue
+
+                    # SWAT/Mentor block
                     if username.startswith("[SWAT] "):
-                        cleaned_name = re.sub(r'^\[SWAT\]\s*', '', username, flags=re.IGNORECASE)
-                        discord_found = False
-                        for discord_name, details in self.discord_cache["members"].items():
-                            compare_dn = re.sub(r'\s*\[SWAT\]$', '', discord_name, flags=re.IGNORECASE)
-                            if cleaned_name.lower() == compare_dn.lower():
-                                discord_found = True
-                                # Check if the member has the leadership role and prepend the icon if so.
+                        cleaned = re.sub(r'^\[SWAT\]\s*', '', username, flags=re.IGNORECASE)
+                        found = False
+                        for dn, details in self.discord_cache["members"].items():
+                            # strip any trailing [SWAT]
+                            compare_dn = re.sub(r'\s*\[SWAT\]$', '', dn, flags=re.IGNORECASE)
+                            if cleaned.lower() == compare_dn.lower():
+                                found = True
                                 is_leader = LEADERSHIP_ID in details["roles"]
-                                display_name = f"{LEADERSHIP_EMOJI} {username}" if is_leader else username
+                                display = f"{LEADERSHIP_EMOJI} {username}" if is_leader else username
                                 mtype = "mentor" if MENTOR_ROLE_ID in details["roles"] else "SWAT"
                                 matching_players.append({
-                                    "username": display_name,
-                                    "type": mtype,
+                                    "username":   display,
+                                    "type":       mtype,
                                     "discord_id": details["id"],
-                                    "rank": self.get_rank_from_roles(details["roles"])
+                                    "rank":       self.get_rank_from_roles(details["roles"])
                                 })
                                 break
-                        if not discord_found:
+                        if not found:
                             matching_players.append({
-                                "username": username,
-                                "type": "SWAT",
+                                "username":   username,
+                                "type":       "SWAT",
                                 "discord_id": None,
-                                "rank": None
+                                "rank":       None
                             })
-                    else:
-                        for discord_name, details in self.discord_cache["members"].items():
-                            tmp_dn = re.sub(r'\s*\[(CADET|TRAINEE|SWAT)\]$', '', discord_name, flags=re.IGNORECASE)
-                            if username.lower() == tmp_dn.lower():
-                                if CADET_ROLE in details["roles"]:
-                                    matching_players.append({
-                                        "username": username,
-                                        "type": "cadet",
-                                        "discord_id": details["id"],
-                                        "rank": self.get_rank_from_roles(details["roles"])
-                                    })
-                                elif TRAINEE_ROLE in details["roles"]:
-                                    matching_players.append({
-                                        "username": username,
-                                        "type": "trainee",
-                                        "discord_id": details["id"],
-                                        "rank": self.get_rank_from_roles(details["roles"])
-                                    })
-                                elif SWAT_ROLE_ID in details["roles"]:
-                                    matching_players.append({
-                                        "username": username,
-                                        "type": "SWAT",
-                                        "discord_id": details["id"],
-                                        "rank": self.get_rank_from_roles(details["roles"])
-                                    })
-                                break
-            if matching_players is not None:
-                matching_players.sort(key=lambda x: RANK_HIERARCHY.index(x["rank"]) if x["rank"] in RANK_HIERARCHY else len(RANK_HIERARCHY))
-            embed_pre = await self.create_embed(region, matching_players, queue_data, fivem_data)
-            await asyncio.sleep(1)
-            await self.update_or_create_embed_for_region(channel, region, embed_pre)
 
-    async def update_or_create_embed_for_region(self, channel, region, embed_pre):
+                    # Cadet/Trainee block
+                    else:
+                        for dn, details in self.discord_cache["members"].items():
+                            tmp = re.sub(r'\s*\[(?:CADET|TRAINEE|SWAT)\]$', '', dn, flags=re.IGNORECASE)
+                            if username.lower() == tmp.lower():
+                                if CADET_ROLE in details["roles"]:
+                                    ptype = "cadet"
+                                elif TRAINEE_ROLE in details["roles"]:
+                                    ptype = "trainee"
+                                elif SWAT_ROLE_ID in details["roles"]:
+                                    ptype = "SWAT"
+                                else:
+                                    ptype = None
+                                matching_players.append({
+                                    "username":   username,
+                                    "type":       ptype,
+                                    "discord_id": details["id"],
+                                    "rank":       self.get_rank_from_roles(details["roles"])
+                                })
+                                break
+
+            # d) Sort by rank hierarchy (lowest index = highest rank)
+            if matching_players is not None:
+                try:
+                    matching_players.sort(
+                        key=lambda mp: RANK_HIERARCHY.index(mp["rank"])
+                        if mp["rank"] in RANK_HIERARCHY else len(RANK_HIERARCHY)
+                    )
+                except Exception as e:
+                    log(f"Error sorting players for {region}: {e}", level="error")
+
+            # e) Build the embed
+            embed = await self.create_embed(
+                region,
+                matching_players,
+                queue_info,
+                {region: fivem_dat}
+            )
+
+            # f) Update or send the embed message
+            await self.update_or_create_embed_for_region(channel, region, embed)
+
+            # g) Rate‐limit: wait 2 seconds before the next region
+            await asyncio.sleep(2)
+
+
+    async def update_or_create_embed_for_region(self, channel, region, embed):
+        """
+        Edit the existing embed for a region, or send a new one if missing.
+        Retries up to 3 times on HTTP 503 and tracks unreachable→reachable transitions.
+        """
+        # Initialize unreachable flag if needed
         if region not in self._server_unreachable:
             self._server_unreachable[region] = False
 
-        stored = get_stored_embed(region)
+        stored = await get_stored_embed(region)
+        MAX_RETRIES = 3
+
         if stored:
-            MAX_RETRIES = 3
+            # Try editing the existing message
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
-                    msg = await channel.fetch_message(stored["message_id"])
-                    await msg.edit(embed=embed_pre)
-                    await asyncio.sleep(2)
-                    if self._server_unreachable.get(region, False):
-                        log(f"Server is reachable again for region {region}.", level="info")
+                    msg = await channel.fetch_message(int(stored["message_id"]))
+                    await msg.edit(embed=embed)
+                    # If we previously marked it unreachable, clear that now
+                    if self._server_unreachable[region]:
+                        log(f"Discord reachable again for region {region}.", level="info")
                         self._server_unreachable[region] = False
                     break
                 except discord.HTTPException as e:
                     if e.status == 503:
-                        if not self._server_unreachable.get(region, False):
-                            log(f"Discord 503 on attempt {attempt} for region {region} while editing embed: {e}", level="error")
+                        # Service unavailable → mark unreachable & retry
+                        if not self._server_unreachable[region]:
+                            log(f"503 editing embed for {region}, attempt {attempt}: {e}", level="error")
                             self._server_unreachable[region] = True
                         if attempt == MAX_RETRIES:
-                            log(f"Max retries reached for region {region} (edit failed)", level="error")
+                            log(f"Max retries reached editing embed for {region}.", level="error")
                     else:
-                        log(f"HTTPException while editing embed for region {region}: {e}", level="error")
+                        log(f"HTTPException editing embed for {region}: {e}", level="error")
                         break
                 except Exception as ex:
-                    log(f"Unexpected error editing embed for region {region}: {ex}", level="error")
+                    log(f"Unexpected error editing embed for {region}: {ex}", level="error")
                     break
+
         else:
-            MAX_RETRIES = 3
+            # No stored message → send a new one
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
-                    msg_send = await channel.send(embed=embed_pre)
-                    set_stored_embed(region, str(msg_send.id), str(msg_send.channel.id))
-                    await asyncio.sleep(1)
-                    if self._server_unreachable.get(region, False):
-                        log(f"Server is reachable again for region {region}.", level="info")
+                    sent = await channel.send(embed=embed)
+                    await set_stored_embed(region, str(sent.id), str(sent.channel.id))
+                    if self._server_unreachable[region]:
+                        log(f"Discord reachable again for region {region}.", level="info")
                         self._server_unreachable[region] = False
                     break
                 except discord.HTTPException as e:
                     if e.status == 503:
-                        if not self._server_unreachable.get(region, False):
-                            log(f"Discord 503 on attempt {attempt} for region {region} while sending embed: {e}", level="error")
+                        if not self._server_unreachable[region]:
+                            log(f"503 sending embed for {region}, attempt {attempt}: {e}", level="error")
                             self._server_unreachable[region] = True
-                        if attempt == MAX_RETRIES:
-                            log(f"Max retries reached for region {region} (send failed)", level="error")
-                        else:
+                        if attempt < MAX_RETRIES:
                             await asyncio.sleep(5)
+                        else:
+                            log(f"Max retries reached sending embed for {region}.", level="error")
                     else:
-                        log(f"HTTPException while sending embed for region {region}: {e}", level="error")
+                        log(f"HTTPException sending embed for {region}: {e}", level="error")
                         break
                 except Exception as ex:
-                    log(f"Unexpected error sending embed for region {region}: {ex}", level="error")
+                    log(f"Unexpected error sending embed for {region}: {ex}", level="error")
                     break
 
     def format_playtime(self, seconds: int) -> str:
@@ -449,25 +557,20 @@ class PlayerListCog(commands.Cog):
         return f"{int(hours)}h {int(mins)}m"
 
 
-    @tasks.loop(hours=1) # Change for production
+    @tasks.loop(hours=1)
     async def send_unique_count(self):
-        """Every 6 h: count distinct SWAT UIDs seen in the last 24 h and POST to your API."""
         await self.bot.wait_until_ready()
-
-        # 1) figure our 24 h cutoff
-        cutoff = datetime.utcnow() - timedelta(hours=24)
-        cutoff_iso = cutoff.isoformat()
-
-        # 2) count how many unique SWAT UIDs have a playtime_log since cutoff
-        cur = self.db_conn.cursor()
-        cur.execute("""
-            SELECT COUNT(DISTINCT l.uid) AS cnt
-              FROM playtime_log l
-              JOIN players_info p ON p.uid = l.uid
-             WHERE datetime(l.log_time) >= datetime(?)
-               AND p.current_name LIKE '[SWAT]%'
-        """, (cutoff_iso,))
-        row = cur.fetchone()
+        cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+        # Async DB query
+        async with self.db_conn.cursor() as cur:
+            await cur.execute("""
+                SELECT COUNT(DISTINCT l.uid) AS cnt
+                  FROM playtime_log l
+                  JOIN players_info p ON p.uid = l.uid
+                 WHERE datetime(l.log_time) >= datetime(?)
+                   AND p.current_name LIKE '[SWAT]%'
+            """, (cutoff,))
+            row = await cur.fetchone()
         count = row["cnt"] if row else 0
 
         # 3) read your website API token
@@ -519,25 +622,19 @@ class PlayerListCog(commands.Cog):
         description="Shows top playtime for SWAT members in the given timeframe (days)."
     )
     async def topplaytime(self, ctx: commands.Context, days: int):
-        await ctx.defer(ephemeral=True)  # Defer the interaction immediately
-        cutoff = datetime.utcnow() - timedelta(days=days)
-        cutoff_iso = cutoff.isoformat()
-        try:
-            cur = self.db_conn.cursor()
-            cur.execute("""
-                SELECT p.uid, p.current_name, SUM(l.seconds) as playtime
-                FROM playtime_log l
-                JOIN players_info p ON l.uid = p.uid
-                WHERE datetime(l.log_time) >= datetime(?)
-                AND p.current_name LIKE '[SWAT]%'
-                GROUP BY p.uid
-                ORDER BY playtime DESC
-            """, (cutoff_iso,))
-            results = cur.fetchall()
-        except Exception as e:
-            log("error" ,f"Error querying top playtime: {e}")
-            await ctx.send("❌ An error occurred while fetching top playtime data.", ephemeral=True)
-            return
+        await ctx.defer(ephemeral=True)
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        async with self.db_conn.cursor() as cur:
+            await cur.execute("""
+                SELECT p.uid, p.current_name, SUM(l.seconds) AS playtime
+                  FROM playtime_log l
+                  JOIN players_info p ON l.uid = p.uid
+                 WHERE datetime(l.log_time) >= datetime(?)
+                   AND p.current_name LIKE '[SWAT]%'
+                 GROUP BY p.uid
+                 ORDER BY playtime DESC
+            """, (cutoff,))
+            results = await cur.fetchall()
 
         if not results:
             await ctx.send(f"No playtime data for SWAT members in the last {days} day(s).", ephemeral=True)
@@ -597,60 +694,111 @@ class PlayerListCog(commands.Cog):
         name="player",
         description="Shows playtime, last seen and past names for the specified player."
     )
-    async def player(self, ctx: commands.Context, *, name: str):
-        await ctx.defer(ephemeral=True)  # Defer the interaction immediately
-        try:
-            cur = self.db_conn.cursor()
-            cur.execute("SELECT * FROM players_info WHERE lower(current_name)=lower(?)", (name,))
-            player_info = cur.fetchone()
-            if player_info is None:
-                cur.execute("""
-                    SELECT uid FROM name_changes
-                    WHERE lower(old_name)=lower(?) 
-                       OR lower(new_name)=lower(?)
-                    LIMIT 1
-                """, (name, name))
-                row = cur.fetchone()
-                if row:
-                    cur.execute("SELECT * FROM players_info WHERE uid = ?", (row["uid"],))
-                    player_info = cur.fetchone()
+    async def player(
+        self,
+        ctx: commands.Context,
+        target: discord.Member = None,
+        *,
+        name: str = None
+    ):
+        await ctx.defer(ephemeral=True)
 
-            if player_info is None:
-                await ctx.send(f"Player `{name}` not found in the logs.", ephemeral=True)
-                return
+        # determine lookup_name from either a mention or plain text
+        if target:
+            # take their server display name
+            disp = target.display_name
+            # SWAT at end? move to front
+            if disp.lower().endswith("[swat]"):
+                core = disp[: -6].strip()
+                lookup_name = f"[SWAT] {core}"
+            # Trainee/Cadet at end? strip it
+            elif re.search(r"\[(?:trainee|cadet)\]$", disp, re.IGNORECASE):
+                lookup_name = re.sub(r"\s*\[(?:trainee|cadet)\]$", "", disp, flags=re.IGNORECASE)
+            else:
+                lookup_name = disp
+        elif name:
+            lookup_name = name
+        else:
+            return await ctx.send(
+                "❌ Please either mention a user or provide their name.",
+                ephemeral=True
+            )
+
+        # Now exactly as before, but using lookup_name for DB queries
+        try:
+            # 1) Lookup player_info
+            async with self.db_conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT * FROM players_info WHERE lower(current_name)=lower(?)",
+                    (lookup_name,)
+                )
+                player_info = await cur.fetchone()
+                if not player_info:
+                    await cur.execute(
+                        """
+                        SELECT uid FROM name_changes
+                         WHERE lower(old_name)=lower(?) OR lower(new_name)=lower(?)
+                         LIMIT 1
+                        """,
+                        (lookup_name, lookup_name)
+                    )
+                    row = await cur.fetchone()
+                    if row:
+                        await cur.execute(
+                            "SELECT * FROM players_info WHERE uid = ?",
+                            (row["uid"],)
+                        )
+                        player_info = await cur.fetchone()
+
+            if not player_info:
+                return await ctx.send(
+                    f"Player `{lookup_name}` not found in the logs.",
+                    ephemeral=True
+                )
 
             uid = player_info["uid"]
             current_name = player_info["current_name"]
             total_playtime = player_info["total_playtime"]
 
-            # Last seen
-            cur.execute("SELECT MAX(log_time) as last_seen FROM playtime_log WHERE uid = ?", (uid,))
-            last_seen_row = cur.fetchone()
+            # 2) Determine last seen
+            async with self.db_conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT MAX(log_time) AS last_seen FROM playtime_log WHERE uid = ?",
+                    (uid,)
+                )
+                last_seen_row = await cur.fetchone()
+
             last_seen = "Unknown"
             if last_seen_row and last_seen_row["last_seen"]:
                 try:
                     last_seen_dt = datetime.fromisoformat(last_seen_row["last_seen"])
                     diff = datetime.utcnow() - last_seen_dt
                     if diff < timedelta(hours=24):
-                        total_seconds = diff.total_seconds()
-                        if total_seconds < 3600:
-                            last_seen = f"{int(total_seconds//60)} min ago"
-                        else:
-                            last_seen = f"{int(total_seconds//3600)} hour(s) ago"
+                        secs = diff.total_seconds()
+                        last_seen = (
+                            f"{int(secs//60)} min ago"
+                            if secs < 3600
+                            else f"{int(secs//3600)} hour(s) ago"
+                        )
                     else:
                         last_seen = last_seen_dt.strftime("%d.%m.%Y - %H:%M")
                 except Exception:
                     last_seen = last_seen_row["last_seen"]
 
-            # Name change history
-            cur.execute("""
-                SELECT old_name, new_name, change_time 
-                FROM name_changes
-                WHERE uid = ?
-                ORDER BY change_time DESC
-            """, (uid,))
-            name_changes = cur.fetchall()
+            # 3) Fetch name change history
+            async with self.db_conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT old_name, new_name, change_time
+                      FROM name_changes
+                     WHERE uid = ?
+                  ORDER BY change_time DESC
+                    """,
+                    (uid,)
+                )
+                name_changes = await cur.fetchall()
 
+            # 4) Build and send embed
             description = (
                 f"**UID:** {uid}\n"
                 f"**Current Name:** {current_name}\n"
@@ -677,7 +825,10 @@ class PlayerListCog(commands.Cog):
 
         except Exception as e:
             log("error", f"Error in /player command: {e}")
-            await ctx.send("❌ An error occurred while fetching the player data.", ephemeral=True)
+            await ctx.send(
+                "❌ An error occurred while fetching the player data.",
+                ephemeral=True
+            )
 
     @player.error
     async def player_error(self, ctx: commands.Context, error):

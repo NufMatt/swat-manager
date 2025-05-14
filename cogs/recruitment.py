@@ -16,7 +16,7 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from config_testing import *
+from config import *
 
 from messages import *
 from cogs.helpers import *
@@ -87,7 +87,7 @@ async def create_application_embed() -> discord.Embed:
 
     embed.add_field(name="🇪🇺 **EU**", value=f"```{eu_status or 'N/A'}```", inline=True)
     embed.add_field(name="🇺🇸 **NA**", value=f"```{na_status or 'N/A'}```", inline=True)
-    embed.add_field(name="🌏 **SEA**", value=f"```{sea_status or 'N/A'}```", inline=True)
+    embed.add_field(name="🇸🇬 **SEA**", value=f"```{sea_status or 'N/A'}```", inline=True)
     embed.set_footer(text="S.W.A.T. Application Manager")
     return embed
 
@@ -129,7 +129,7 @@ async def create_voting_embed(start_time, end_time, recruiter: int, region, inga
                 "SWAT, please express your vote below.\n"
                 f"Use {PLUS_ONE_EMOJI}, ❔, or {MINUS_ONE_EMOJI} accordingly."
             ),
-            color=0x000000
+            color=discord.Color.dark_grey()
         )
         flags = {"EU": "🇪🇺 ", "NA": "🇺🇸 ", "SEA": "🇸🇬 "}
         region_name = region[:-1] if region and region[-1].isdigit() else region
@@ -390,8 +390,8 @@ class RequestActionView(discord.ui.View):
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="request_accept:{uid}")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         # Attempt to extract the original user id from the custom_id; if not found, fallback to self.user_id.
-        await interaction.response.defer(thinking=True)
         try:
             parts = button.custom_id.split(":")
             original_user_id = parts[1] if len(parts) > 1 else self.user_id
@@ -400,14 +400,14 @@ class RequestActionView(discord.ui.View):
 
         leadership_role = interaction.client.resources.leadership_role
         if not is_in_correct_guild(interaction):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ This command can only be used in the specified guild.",
                 ephemeral=True
             )
             return
 
         if not leadership_role or leadership_role not in interaction.user.roles:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ You do not have permission to use this command.",
                 ephemeral=True
             )
@@ -416,7 +416,7 @@ class RequestActionView(discord.ui.View):
         # Fetch the request data from the database using the original user id.
         request_data = await get_role_request( str(original_user_id))
         if not request_data:
-            await interaction.response.send_message("❌ No pending request found for the specified user.", ephemeral=True)
+            await interaction.followup.send("❌ No pending request found for the specified user.", ephemeral=True)
             return
 
         try:
@@ -440,7 +440,7 @@ class RequestActionView(discord.ui.View):
 
             # Remove it from the pending list in the database.
             if not await remove_role_request( str(original_user_id)):
-                await interaction.response.send_message("⚠ Warning: Could not remove the request from the database.", ephemeral=True)
+                await interaction.followup.send("⚠ Warning: Could not remove the request from the database.", ephemeral=True)
 
             # DM the user about the acceptance.
             user = interaction.client.get_user(int(original_user_id))
@@ -479,7 +479,7 @@ class RequestActionView(discord.ui.View):
                 if timestamp:
                     dm_embed.add_field(
                         name="Opened At",
-                        value=timestamp,
+                        value=d_timestamp(timestamp),
                         inline=False
                     )
 
@@ -496,12 +496,12 @@ class RequestActionView(discord.ui.View):
                     ephemeral=True
                 )
 
-            await interaction.response.send_message("✅ The request has been accepted.", ephemeral=True)
+            await interaction.followup.send("✅ The request has been accepted.", ephemeral=True)
 
         except IndexError:
-            await interaction.response.send_message("❌ No embed found on this message.", ephemeral=True)
+            await interaction.followup.send("❌ No embed found on this message.", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Error accepting request: {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ Error accepting request: {e}", ephemeral=True)
 
     @discord.ui.button(label="Ignore", style=discord.ButtonStyle.danger, custom_id="request_ignore:{uid}")
     async def ignore_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -606,7 +606,7 @@ class DenyReasonModal(discord.ui.Modal):
                 )
             dm_embed.add_field(name="Reason for Denial", value=reason_text, inline=False)
             if self.timestamp:
-                dm_embed.add_field(name="Opened At", value=self.timestamp, inline=False)
+                dm_embed.add_field(name="Opened At", value=d_timestamp(self.timestamp), inline=False)
             await user.send(embed=dm_embed)
             dm_sent = True
         except discord.Forbidden:
@@ -1823,7 +1823,7 @@ class RecruitmentCog(commands.Cog):
         
         embed = discord.Embed(
             title=f"❌ {data['ingame_name']} has been removed!",
-            colour=0xf94144
+            colour=discord.Color.red()
         )
         if reapply_info:
             embed.add_field(name="Status", value=reapply_info, inline=False)
@@ -2290,7 +2290,7 @@ class RecruitmentCog(commands.Cog):
 
         embed = discord.Embed(
             title="❌ This application has been removed!",
-            colour=0xf94144
+            colour=discord.Color.red()
         )
         embed.add_field(name="Recruiter:", value=f"<@{interaction.user.id}>", inline=False)
         if reapply_info:
@@ -2437,12 +2437,12 @@ class RecruitmentCog(commands.Cog):
         acceptance_embed = discord.Embed(
             title="✅ This application has been **ACCEPTED**!",
             description=f"<@{applicant_id}> is now a Trainee.",
-            colour=0x00b050
+            colour=discord.Color.green()
         )
         acceptance_embed.add_field(name="Recruiter: ", value=f"<@{interaction.user.id}>", inline=False)
         acceptance_embed.set_footer(text="🔒 This thread is locked now.")
         
-        dm_embed = discord.Embed(title=":white_check_mark: Your application as a S.W.A.T Trainee has been accepted!", description=":tada: Congratulations!\nYou’ve automatically received your Trainee role — the first step is complete!\n\n:pushpin: All additional information can be found in the #「:pushpin:」trainee-info channel.\nPlease make sure to carefully read through everything to get started on the right foot.\n\nWelcome aboard, and good luck on your journey!\n\n", colour=0x00c600)
+        dm_embed = discord.Embed(title=":white_check_mark: Your application as a S.W.A.T Trainee has been accepted!", description=":tada: Congratulations!\nYou’ve automatically received your Trainee role — the first step is complete!\n\n:pushpin: All additional information can be found in the #「:pushpin:」trainee-info channel.\nPlease make sure to carefully read through everything to get started on the right foot.\n\nWelcome aboard, and good luck on your journey!\n\n", colour=discord.Color.green())
         dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value=f"We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form]({FEEDBACK_FORM_LINK})\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
         
         # Send a DM to the applicant
@@ -2611,7 +2611,7 @@ class RecruitmentCog(commands.Cog):
         acceptance_embed = discord.Embed(
             title="✅ This application has been **ACCEPTED**!",
             description=f"<@{applicant_id}> is now a Cadet.",
-            colour=0x00b050
+            colour=discord.Color.green()
         )
         acceptance_embed.set_footer(text="🔒 This thread is locked now.")
         await interaction.followup.send(embed=acceptance_embed, ephemeral=False)
@@ -2696,7 +2696,7 @@ class RecruitmentCog(commands.Cog):
 
         applicant_id = int(app_data["applicant_id"])
         applicant_user = interaction.client.get_user(applicant_id)
-        dm_embed = discord.Embed(title="❌ Your application as a S.W.A.T Trainee has been denied.", description="We are sorry to inform you that your SWAT application has been denied.", colour=0xd00000)
+        dm_embed = discord.Embed(title="❌ Your application as a S.W.A.T Trainee has been denied.", description="We are sorry to inform you that your SWAT application has been denied.", colour=discord.color.red())
         if can_reapply == -1:
             dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are free to reapply immediatly. Please ensure any issues mentioned above are addressed before reapplying.", inline=False)
         elif can_reapply == 0:

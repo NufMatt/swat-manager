@@ -10,7 +10,7 @@ import platform
 from cogs.db_utils import *
 from cogs.guild_resources import GuildResources
 
-from config_testing import TOKEN_FILE
+from config import TOKEN_FILE
 
 if platform.system() != "Windows":
     try:
@@ -104,11 +104,11 @@ async def main():
     async with bot:
         bot.resources = GuildResources(bot)
         # Load the cogs/extensions:
-        # await bot.load_extension("cogs.recruitment")
-        #await bot.load_extension("cogs.tickets")
-        #await bot.load_extension("cogs.status")
-        await bot.load_extension("cogs.playerlist-new")
-        #await bot.load_extension("cogs.verification")
+        await bot.load_extension("cogs.recruitment")
+        await bot.load_extension("cogs.tickets")
+        await bot.load_extension("cogs.playerlist")
+        await bot.load_extension("cogs.status")
+        await bot.load_extension("cogs.verification")
         # await bot.load_extension("cogs.example_cog")
         await bot.start(TOKEN)
 

@@ -6,8 +6,8 @@ from discord import app_commands, ButtonStyle
 from discord.ext import commands, tasks
 import re
 import aiosqlite
-from datetime import datetime, timedelta
-from config_testing import *
+from datetime import datetime, timedelta, time
+from config import *
 from messages import OPEN_TICKET_EMBED_TEXT
 from cogs.helpers import *
 from cogs.db_utils import *
@@ -88,6 +88,11 @@ class LOAModal(discord.ui.Modal, title="Leave of Absence (LOA)"):
             await interaction.response.send_message("❌ End date cannot be in the past.", ephemeral=True)
             return
 
+        midnight = datetime.combine(end_date_obj.date(), time())
+        iso_str = midnight.isoformat()  # e.g. "2025-12-31T00:00:00"
+        # pick 'D' for a long date ("31 December 2025") or 'd' for numeric ("31/12/2025")
+        date_tag = d_timestamp(iso_str, "D")
+        
         await interaction.response.defer(ephemeral=True)
         now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         channel = interaction.channel
@@ -103,7 +108,7 @@ class LOAModal(discord.ui.Modal, title="Leave of Absence (LOA)"):
                 description=(
                     f"**User:** <@{interaction.user.id}>\n"
                     f"**Reason:** {self.reason.value}\n"
-                    f"**End Date:** {self.end_date.value}"
+                    f"**End Date:** {date_tag}"
                 ),
                 color=0x158225
             )
@@ -451,7 +456,7 @@ class TicketCog(commands.Cog):
             thread_mention = thread.mention if thread else f"<#{thread_id}>"
 
             # Format end date
-            end_date_str = datetime.fromisoformat(end_date_iso).strftime("%d-%m-%Y")
+            end_date_str = d_timestamp(end_date_iso)
 
             embed.add_field(
                 name=user_display,
@@ -611,9 +616,17 @@ class TicketCog(commands.Cog):
             return await interaction.response.send_message("❌ This command can only be used in the specified guild.", ephemeral=True)
 
         leadership_role = interaction.client.resources.leadership_role
-        if not leadership_role or leadership_role not in interaction.user.roles:
-            return await interaction.response.send_message("❌ You do not have permission to open a private ticket.", ephemeral=True)
+        recruiter_role   = interaction.client.resources.recruiter_role
 
+        # build a list of the configured “allowed” roles
+        allowed = [r for r in (leadership_role, recruiter_role) if r]
+
+        # if none of the allowed roles are on the user, deny
+        if not any(role in interaction.user.roles for role in allowed):
+            return await interaction.response.send_message(
+                "❌ You do not have permission to open a private ticket.",
+                ephemeral=True
+            )
         channel = self.bot.get_channel(TICKET_CHANNEL_ID)
         if not channel:
             return await interaction.response.send_message("❌ Ticket channel not found", ephemeral=True)

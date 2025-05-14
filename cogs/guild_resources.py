@@ -1,7 +1,7 @@
 # cogs/guild_resources.py
 
 import asyncio
-from config_testing import *
+from config import *
 
 class GuildResources:
     """Holds cached Role & Channel objects for quick access."""

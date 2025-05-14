@@ -4,7 +4,7 @@ import discord
 from discord.ext import commands
 import asyncio, aiohttp, time
 from datetime import datetime
-from config_testing import *
+from config import *
 from cogs.helpers import *
 
 # -----------------------------------------------------------------------------

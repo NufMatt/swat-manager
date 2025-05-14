@@ -760,7 +760,7 @@ async def get_application_stats(days: int = 0) -> dict:
                         "SELECT COUNT(*) FROM application_threads WHERE status = ?",
                         (status,)
                     )
-                stats[status] = await cursor.fetchone()[0]
+                stats[status] = (await cursor.fetchone())[0]
     except aiosqlite.Error as e:
         log(f"DB Error (get_application_stats): {e}", level="error")
     return stats

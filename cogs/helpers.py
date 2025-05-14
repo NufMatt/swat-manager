@@ -1,10 +1,11 @@
 import discord
-from config_testing import *
+from config import *
 import logging
 import inspect
 import aiosqlite
 from datetime import datetime, timezone
 from typing import Optional, Dict
+import pytz
 DATABASE_FILE = "data.db"
 
 # 1) Generate a log file name based on date/time
@@ -139,31 +140,23 @@ def remove_stored_embed(embed_key: str) -> bool:
 
 def d_timestamp(iso_str: str, style: str = "") -> str:
     """
-    Convert an ISO-format datetime string into a Discord timestamp tag.
-
-    :param iso_str: A datetime in ISO format, e.g. "2025-05-13T16:23:49.739179" or with offset "2025-05-13T16:23:49+02:00"
-    :param style:  (optional) One of Discord’s formatting codes:
-                   - 't' short time (15:23)
-                   - 'T' long time (15:23:49)
-                   - 'd' short date (13/05/2025)
-                   - 'D' long date (13 May 2025)
-                   - 'f' short date/time (13 May 2025 15:23)
-                   - 'F' long date/time (Tuesday, 13 May 2025 15:23)
-                   - 'R' relative (e.g. “2 hours ago”)
-    :returns:     A string like `<t:unix_timestamp>` or `<t:unix_timestamp:style>`
-
-    Example:
-      iso_to_discord_timestamp("2025-05-13T16:23:49.739179", "f")
-      → "<t:1747164229:f>"
+    Convert an ISO-format datetime string into a Discord timestamp tag,
+    treating naïve datetimes as Europe/Berlin local time via pytz.
     """
-    # Parse ISO; handle Z-suffix as UTC
+    # 1) Parse ISO; handle trailing 'Z' if needed
     try:
         dt = datetime.fromisoformat(iso_str)
     except ValueError:
-        # fallback for trailing 'Z'
-        dt = datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
-    # Assume UTC if no tzinfo
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+
+    # 2) If no tzinfo, assume Europe/Berlin
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    unix_ts = int(dt.timestamp())
+        berlin = pytz.timezone("Europe/Berlin")
+        dt = berlin.localize(dt)
+
+    # 3) Convert to UTC
+    dt_utc = dt.astimezone(pytz.utc)
+
+    # 4) Build Discord tag
+    unix_ts = int(dt_utc.timestamp())
     return f"<t:{unix_ts}:{style}>" if style else f"<t:{unix_ts}>"
