@@ -81,7 +81,7 @@ async def create_application_embed() -> discord.Embed:
     sea_status = format_status((await get_region_status("SEA")) or "UNKNOWN")
     
     embed = discord.Embed(
-        title="🚨 S.W.A.T. Recruitment - Application Requirements 🚨",
+        title="🚨 S.W.A.T Recruitment - Application Requirements 🚨",
         description=RECRUITMENT_MESSAGE, color=discord.Color.blue()
     )
 

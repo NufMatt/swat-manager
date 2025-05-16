@@ -689,7 +689,7 @@ class PlayerListCog(commands.Cog):
             # Let other errors bubble up (optional)
             raise error
 
-    @commands.has_role(LEADERSHIP_ID)
+    @commands.has_any_role(LEADERSHIP_ID, RECRUITER_ID)
     @commands.hybrid_command(
         name="player",
         description="Shows playtime, last seen and past names for the specified player."
