@@ -4,6 +4,8 @@ from discord import app_commands
 from discord.ext import commands
 from time import perf_counter, time
 import aiohttp
+import os
+from pathlib import Path
 
 from config import TICKET_CHANNEL_ID
 
@@ -11,6 +13,15 @@ class StatusCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # Caches to avoid hitting APIs on every invocation
+        creds_path = Path(__file__).parent / "pushover_creds.txt"
+        try:
+            with open(creds_path, "r") as f:
+                lines = dict(line.strip().split("=", 1) for line in f if "=" in line)
+            self.pushover_token = lines["API_TOKEN"]
+            self.pushover_user  = lines["USER_KEY"]
+        except Exception as e:
+            raise RuntimeError(f"Could not load Pushover creds: {e}")
+    # —————————————————————————————————————————————
         self._discord_status_cache = None  # dict with keys: description, ms, ts
         self._discord_status_ttl = 60      # seconds
         self._api_call_cache = None        # dict with keys: ok, ms, ts
@@ -99,6 +110,54 @@ class StatusCog(commands.Cog):
         )
 
         await interaction.followup.send(embed=embed)
+
+    @app_commands.command(
+        name="contactmatt",
+        description="📱 Alert Matt via Pushover with a reason"
+    )
+    @app_commands.describe(reason="Why are you contacting Matt?")
+    async def contactmatt(
+        self,
+        interaction: discord.Interaction,
+        reason: str
+    ):
+        CHIEF_ROLE_ID = 958272560905195521  # ← replace with your CHIEF role ID
+
+        # 1) permission check
+        if CHIEF_ROLE_ID not in (r.id for r in interaction.user.roles):
+            return await interaction.response.send_message(
+                "❌ You don’t have permission to use this.", ephemeral=True
+            )
+
+        # 2) defer so we can do the HTTP request
+        await interaction.response.defer(ephemeral=True)
+
+        # 3) build the Pushover message
+        user_display = interaction.user.display_name
+        pushover_msg = f"🐱‍💻 /contactmatt by **{user_display}**\n> {reason}"
+
+        # 4) fire off to Pushover
+        async with aiohttp.ClientSession() as session:
+            payload = {
+                "token": self.pushover_token,
+                "user":  self.pushover_user,
+                "message": pushover_msg
+            }
+            async with session.post(
+                "https://api.pushover.net/1/messages.json",
+                data=payload
+            ) as resp:
+                if resp.status == 200:
+                    await interaction.followup.send(
+                        "✅ Matt has been notified!", ephemeral=True
+                    )
+                else:
+                    text = await resp.text()
+                    await interaction.followup.send(
+                        f"❌ Notification failed ({resp.status}):\n{text}",
+                        ephemeral=True
+                    )
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(StatusCog(bot))

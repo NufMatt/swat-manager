@@ -3,6 +3,7 @@ token.txt
 token-test.txt
 account_token.txt
 website-api-key.txt
+pushover_creds.txt
 
 # DONT PUSH DATABASES
 *.db
