@@ -91,7 +91,7 @@ class LOAModal(discord.ui.Modal, title="Leave of Absence (LOA)"):
         midnight = datetime.combine(end_date_obj.date(), time())
         iso_str = midnight.isoformat()  # e.g. "2025-12-31T00:00:00"
         # pick 'D' for a long date ("31 December 2025") or 'd' for numeric ("31/12/2025")
-        date_tag = d_timestamp(iso_str, "D")
+        date_tag = d_timestamp(iso_str, "d")
         
         await interaction.response.defer(ephemeral=True)
         now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -333,14 +333,14 @@ class TicketCog(commands.Cog):
         else:
             return await interaction.response.send_message("❌ Could not find LOA embed.", ephemeral=True)
 
-        m = re.search(r"(\d{2}-\d{2}-\d{4})", embed.description)
+        m = re.search(r"<t:(\d+):D>", embed.description)
         if not m:
             return await interaction.response.send_message("❌ Could not parse end date.", ephemeral=True)
 
-        # convert to YYYY-MM-DD
-        end_iso = datetime.strptime(m.group(1), "%d-%m-%Y").date().isoformat()
+        # convert epoch seconds back into ISO date
+        ts = int(m.group(1))
+        end_iso = datetime.utcfromtimestamp(ts).date().isoformat()
 
-        # **only here** do we write the LOA reminder
         await add_loa_reminder(str(thread.id), ticket[1], end_iso)
 
         await interaction.response.send_message(
