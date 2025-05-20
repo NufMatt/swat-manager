@@ -1983,10 +1983,9 @@ class RecruitmentCog(commands.Cog):
                         await interaction.followup.send(f"❌ HTTP Error creating cadet thread: {e}", ephemeral=True)
                         return
                     voting_embed = await create_voting_embed(start_time, end_time, interaction.user.id, data["region"], ingame_name)
-                    msg = await thread.send(embed=voting_embed)
-                    
-                    await asyncio.gather(*(msg.add_reaction(e) for e in (PLUS_ONE_EMOJI, "❔", MINUS_ONE_EMOJI)))
-                    
+                    vote_msg = await thread.send(embed=voting_embed)
+                    await asyncio.gather(*(vote_msg.add_reaction(e) for e in (PLUS_ONE_EMOJI, "❔", MINUS_ONE_EMOJI)))
+
                     swat_chat = self.resources.swat_chat_ch
                     if swat_chat:
                         message_text = random.choice(cadet_messages).replace("{username}", f"<@{data['user_id']}>")
@@ -1998,7 +1997,7 @@ class RecruitmentCog(commands.Cog):
                         starttime=start_time,
                         endtime=end_time,
                         role_type="cadet",
-                        embed_id=str(embed_msg.id),
+                        embed_id=str(vote_msg.id),       # using the voting embed’s message ID
                         ingame_name=ingame_name,
                         user_id=data["user_id"],
                         region=data["region"]
