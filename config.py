@@ -67,7 +67,7 @@ SWAT_WEBSITE_TOKEN_FILE = "website-api-key.txt"
 SEND_API_DATA = True
 
 API_URLS = {
-    #"SEA": "https://api.gtacnr.net/cnr/players?serverId=SEA",
+    "SEA": "https://api.gtacnr.net/cnr/players?serverId=SEA",
     #"NA3": "https://api.gtacnr.net/cnr/players?serverId=US3",
     "NA2": "https://api.gtacnr.net/cnr/players?serverId=US2",
     "NA1": "https://api.gtacnr.net/cnr/players?serverId=US1",
@@ -81,7 +81,7 @@ API_URLS_FIVEM = {
     "NA1": "https://212.102.58.130:30120/info.json",
     "NA2": "https://212.102.58.130:30121/info.json",
     #"NA3": "https://45.88.228.198:30122/info.json",
-    #"SEA": "https://51.79.231.52:30130/info.json,"
+    "SEA": "https://138.199.25.49:30120/info.json,"
 }
 
 RANK_HIERARCHY = [
