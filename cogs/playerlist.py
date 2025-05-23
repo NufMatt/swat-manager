@@ -283,7 +283,7 @@ class PlayerListCog(commands.Cog):
                     embed.add_field(name="🌐 Avg Ping", value=f"```{avg_ping} ms```", inline=True)
                 else:
                     embed.add_field(name="🌐 Avg Ping", value="```N/A```", inline=True)
-            
+                embed.add_field(name="", value=restart_timer, inline=False)
             else:
                 # embed.add_field(name=f"{SWAT_LOGO_EMOJI}SWAT:", value=f"```{swat_count}```", inline=True)
                 embed.add_field(name="🎮Players:", value="```no data```", inline=True)
