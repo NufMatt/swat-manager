@@ -213,17 +213,15 @@ class PlayerListCog(commands.Cog):
                 return rank
         return None
 
-    async def create_embed(self, region, matching_players, queue_data, fivem_data):
+    async def create_embed(self, region, matching_players, queue_data, server_info):
         offline = False
         embed_color = 0x28ef05
-        if matching_players is None or (fivem_data and fivem_data.get(region) is None):
+        if matching_players is None or server_info is None:
             offline = True
             embed_color = 0xf40006
         if queue_data and region in queue_data and not offline:
             try:
-                last_heartbeat = datetime.fromisoformat(
-                    queue_data[region]["LastHeartbeatDateTime"].replace("Z", "+00:00")
-                )
+                last_heartbeat = datetime.fromisoformat(queue_data[region]["LastHeartbeatDateTime"].replace("Z", "+00:00"))
                 if datetime.now(pytz.UTC) - last_heartbeat > timedelta(minutes=1):
                     offline = True
                     embed_color = 0xf40006
@@ -248,7 +246,7 @@ class PlayerListCog(commands.Cog):
             mentor_count = sum(p["type"] == "mentor" for p in matching_players)
             trainee_count = sum(p["type"] in ("trainee", "cadet") for p in matching_players)
             try:
-                restart_timer = self.time_convert(fivem_data[region]["vars"]["Time"])
+                restart_timer = self.time_convert(server_info["vars"]["Time"])
             except Exception as e:
                 log(f"Error fetching restart timer for region {region}: {e}", level="warning")
                 restart_timer = "*No restart data available!*"
@@ -277,10 +275,15 @@ class PlayerListCog(commands.Cog):
                 embed.add_field(name="\n*Nobody is online*\n", value="", inline=False)
             if queue_data and region in queue_data:
                 p = queue_data[region]
-                # embed.add_field(name=f"{SWAT_LOGO_EMOJI}SWAT:", value=f"``` {swat_count} ```", inline=True)
                 embed.add_field(name="🎮Players:", value=f"```{p['Players']}/{p['MaxPlayers']}```", inline=True)
                 embed.add_field(name="⌛Queue:", value=f"```{p['QueuedPlayers']}```", inline=True)
-                embed.add_field(name="", value=restart_timer, inline=False)
+                players_list = server_info.get("players", [])
+                if players_list:
+                    avg_ping = round(sum(p["ping"] for p in players_list) / len(players_list))
+                    embed.add_field(name="🌐 Avg Ping", value=f"```{avg_ping} ms```", inline=True)
+                else:
+                    embed.add_field(name="🌐 Avg Ping", value="```N/A```", inline=True)
+            
             else:
                 # embed.add_field(name=f"{SWAT_LOGO_EMOJI}SWAT:", value=f"```{swat_count}```", inline=True)
                 embed.add_field(name="🎮Players:", value="```no data```", inline=True)
@@ -389,6 +392,20 @@ class PlayerListCog(commands.Cog):
             players   = await self.fetch_players(region)
             fivem_dat = await self.fetch_fivem(region)
 
+            # ─── fetch full /players.json for ping data ───
+            try:
+                async with self.rate_limit_lock:
+                    async with self.http.get(
+                        API_URLS_FIVEM[region].replace('/info.json','/players.json'),
+                        ssl=False
+                    ) as resp:
+                        resp.raise_for_status()
+                        raw = await resp.read()                # bytes
+                        fivem_dat['players'] = json.loads(raw.decode("utf-8", errors="replace"))
+                    await asyncio.sleep(1)
+            except Exception as e:
+                log(f"Could not fetch full players.json for {region}: {e}", level="warning")
+
             # b) Log playtime for each unique player
             if isinstance(players, list):
                 seen = set()
@@ -472,12 +489,7 @@ class PlayerListCog(commands.Cog):
                     log(f"Error sorting players for {region}: {e}", level="error")
 
             # e) Build the embed
-            embed = await self.create_embed(
-                region,
-                matching_players,
-                queue_info,
-                {region: fivem_dat}
-            )
+            embed = await self.create_embed(region, matching_players, queue_info, fivem_dat)
 
             # f) Update or send the embed message
             await self.update_or_create_embed_for_region(channel, region, embed)

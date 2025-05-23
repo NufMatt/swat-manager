@@ -8,6 +8,7 @@ pushover_creds.txt
 # DONT PUSH DATABASES
 *.db
 
+test.py
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
