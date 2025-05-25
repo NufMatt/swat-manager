@@ -2634,24 +2634,24 @@ class RecruitmentCog(commands.Cog):
     @handle_interaction_errors
     async def app_deny_command(self, interaction: discord.Interaction, reason: str, can_reapply: int):
         if not is_in_correct_guild(interaction):
-            await interaction.followup.send("❌ Wrong guild!", ephemeral=True)
+            await interaction.response.send_message("❌ Wrong guild!", ephemeral=True)
             return
         if not isinstance(interaction.channel, discord.Thread):
-            await interaction.followup.send("❌ Must be used inside a thread!", ephemeral=True)
+            await interaction.response.send_message("❌ Must be used inside a thread!", ephemeral=True)
             return
         
         # Check if the user issuing command is a Recruiter
         recruiter_role = self.bot.resources.recruiter_role
         if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.followup.send("❌ You do not have permission to accept this application.", ephemeral=True)
+            await interaction.response.send_message("❌ You do not have permission to accept this application.", ephemeral=True)
             return
 
         app_data = await get_application( str(interaction.channel.id))
         if not app_data:
-            await interaction.followup.send("❌ No application data found for this thread!", ephemeral=True)
+            await interaction.response.send_message("❌ No application data found for this thread!", ephemeral=True)
             return
         if app_data["is_closed"] == 1:
-            await interaction.followup.send("❌ This application is already closed!", ephemeral=True)
+            await interaction.response.send_message("❌ This application is already closed!", ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=False)
