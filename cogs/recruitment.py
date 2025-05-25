@@ -2633,7 +2633,6 @@ class RecruitmentCog(commands.Cog):
     )
     @handle_interaction_errors
     async def app_deny_command(self, interaction: discord.Interaction, reason: str, can_reapply: int):
-        await interaction.response.defer(ephemeral=False)
         if not is_in_correct_guild(interaction):
             await interaction.followup.send("❌ Wrong guild!", ephemeral=True)
             return
@@ -2655,6 +2654,7 @@ class RecruitmentCog(commands.Cog):
             await interaction.followup.send("❌ This application is already closed!", ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=False)
         guild = interaction.guild
         member = guild.get_member(int(app_data["applicant_id"])) if guild else None
         now = datetime.now()
@@ -2695,7 +2695,7 @@ class RecruitmentCog(commands.Cog):
 
         applicant_id = int(app_data["applicant_id"])
         applicant_user = interaction.client.get_user(applicant_id)
-        dm_embed = discord.Embed(title="❌ Your application as a S.W.A.T Trainee has been denied.", description="We are sorry to inform you that your SWAT application has been denied.", colour=discord.CategoryChannelolor.red())
+        dm_embed = discord.Embed(title="❌ Your application as a S.W.A.T Trainee has been denied.", description="We are sorry to inform you that your SWAT application has been denied.", color=discord.Color.red())
         if can_reapply == -1:
             dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are free to reapply immediatly. Please ensure any issues mentioned above are addressed before reapplying.", inline=False)
         elif can_reapply == 0:
@@ -2726,7 +2726,7 @@ class RecruitmentCog(commands.Cog):
                 inline=False
             )
         denied_embed.set_footer(text="🔒 This thread is locked now!")
-        await interaction.followup.send(embed=denied_embed, ephemeral=False)
+        await interaction.followup.send(embed=denied_embed)
 
         activity_channel = self.resources.activity_ch
         if activity_channel:
