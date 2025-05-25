@@ -439,6 +439,16 @@ async def init_applications_db():
                 """
             )
             await conn.commit()
+                        # ——— Migration: add last_reminder_sent if missing ———
+            cursor = await conn.execute("PRAGMA table_info(application_threads)")
+            cols = [row[1] for row in await cursor.fetchall()]
+            if "last_reminder_sent" not in cols:
+                await conn.execute(
+                    "ALTER TABLE application_threads ADD COLUMN last_reminder_sent TEXT"
+                )
+                await conn.commit()
+                log("Added last_reminder_sent column to application_threads.", level="info")
+
             log("Applications DB (application_threads) initialized successfully async with new ban history columns.")
     except aiosqlite.Error as e:
         log(f"Applications DB Error: {e}", level="error")

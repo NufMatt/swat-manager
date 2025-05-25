@@ -1033,8 +1033,6 @@ class RecruitmentCog(commands.Cog):
         self.bot = bot
         self.resources = bot.resources
         self.ready = False
-        self.ban_history_reminded = set()  # to track threads that already got a reminder
-        self.claimed_reminders = {}
         self.ban_history_submitted = set() 
         self.embed_message_id = None
         self.application_embed_message_id = None
@@ -1177,88 +1175,80 @@ class RecruitmentCog(commands.Cog):
     @tasks.loop(hours=1)
     async def check_ban_history_and_application_reminders(self):
         await self.bot.wait_until_ready()
-        now = datetime.now()
-
-        # initialize reminder_times dict once
-        if not hasattr(self, "reminder_times"):
-            self.reminder_times = {}
+        now_iso = datetime.utcnow().isoformat()
 
         async with aiosqlite.connect(DATABASE_FILE) as db:
-            # Fetch all open application threads
+            # Fetch only open threads never reminded OR last reminded ≥24h ago
             async with db.execute("""
                 SELECT thread_id, applicant_id, recruiter_id, starttime,
                        ban_history_sent, ban_history_reminder_count
                 FROM application_threads
                 WHERE is_closed = 0
+                  AND (
+                    last_reminder_sent IS NULL
+                    OR datetime(last_reminder_sent) <= datetime('now', '-24 hours')
+                  )
             """) as cursor:
                 rows = await cursor.fetchall()
 
             for thread_id, applicant_id, recruiter_id, start_iso, ban_history_sent, reminder_count in rows:
-                # skip if we’ve sent a reminder for this thread in the last 24 h
-                last = self.reminder_times.get(thread_id)
-                if last and (now - last) < timedelta(hours=24):
-                    continue
-
-                # respect “silenced” flag
-                if await is_application_silenced(thread_id):
-                    log(f"Thread {thread_id} is silenced; skipping notification.", level="info")
-                    continue
-
-                # only start reminding after 24 h have elapsed
+                reminder_count = reminder_count or 0
+                # 1) skip until 24h after application start
                 try:
                     start_dt = datetime.fromisoformat(start_iso)
-                except (TypeError, ValueError):
+                except ValueError:
                     continue
-                if (now - start_dt) <= timedelta(hours=24):
+                if (datetime.utcnow() - start_dt) <= timedelta(hours=24):
                     continue
 
-                # ensure the thread still exists
+                # 2) respect silence
+                if await is_application_silenced(thread_id):
+                    log(f"Thread {thread_id} silenced; skipping reminder.", level="info")
+                    continue
+
+                # 3) ensure thread exists
                 thread = self.bot.get_channel(int(thread_id))
                 if not isinstance(thread, discord.Thread):
                     continue
 
-                # build the correct embed + mention
+
+                # 4) build embed & mention
                 if ban_history_sent:
                     embed = discord.Embed(
                         title="⏰ Reminder: This application is still open and awaiting review.",
                         colour=0xEFE410
                     )
                     mention = f"<@{recruiter_id}>" if recruiter_id else f"<@&{RECRUITER_ID}>"
-
                 else:
-                    # first two reminders ping only the applicant
                     if reminder_count < 2:
-                        embed = discord.Embed(
-                            title="⏰ Reminder: Please post your ban history as a picture in this thread!",
-                            colour=0xEFE410
-                        )
+                        title = "⏰ Reminder: Please post your ban history as a picture in this thread!"
                         mention = f"<@{applicant_id}>"
-                    # third reminder pings applicant + recruiters
                     else:
-                        embed = discord.Embed(
-                            title="⏰ Final Reminder: User has not provided a ban history after elapsed time.",
-                            colour=0xEFE410
+                        title = "⏰ Final Reminder: User has not provided a ban history after elapsed time."
+                        mention = (
+                            f"<@{applicant_id}> <@{recruiter_id}>"
+                            if recruiter_id else
+                            f"<@{applicant_id}> <@&{RECRUITER_ID}>"
                         )
-                        if recruiter_id:
-                            mention = f"<@{applicant_id}> <@{recruiter_id}>"
-                        else:
-                            mention = f"<@{applicant_id}> <@&{RECRUITER_ID}>"
+                    embed = discord.Embed(title=title, colour=0xEFE410)
 
-                    # bump the reminder counter
-                    new_count = reminder_count + 1
+                    # bump the counter
                     await db.execute(
                         "UPDATE application_threads SET ban_history_reminder_count = ? WHERE thread_id = ?",
-                        (new_count, thread_id)
+                        (reminder_count + 1, thread_id)
                     )
 
-                # send the reminder
+                # 5) send it
                 try:
                     await thread.send(content=mention, embed=embed)
                 except Exception as e:
                     log(f"Error sending reminder in thread {thread_id}: {e}", level="error")
 
-                # record that we just sent one
-                self.reminder_times[thread_id] = now
+                # 6) record timestamp
+                await db.execute(
+                    "UPDATE application_threads SET last_reminder_sent = ? WHERE thread_id = ?",
+                    (now_iso, thread_id)
+                )
 
             # commit any counter-updates
             await db.commit()
