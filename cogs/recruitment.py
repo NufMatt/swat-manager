@@ -2695,7 +2695,7 @@ class RecruitmentCog(commands.Cog):
 
         applicant_id = int(app_data["applicant_id"])
         applicant_user = interaction.client.get_user(applicant_id)
-        dm_embed = discord.Embed(title="❌ Your application as a S.W.A.T Trainee has been denied.", description="We are sorry to inform you that your SWAT application has been denied.", colour=discord.color.red())
+        dm_embed = discord.Embed(title="❌ Your application as a S.W.A.T Trainee has been denied.", description="We are sorry to inform you that your SWAT application has been denied.", colour=discord.CategoryChannelolor.red())
         if can_reapply == -1:
             dm_embed.add_field(name="Reason:", value=f"```{reason}```\nYou are free to reapply immediatly. Please ensure any issues mentioned above are addressed before reapplying.", inline=False)
         elif can_reapply == 0:
