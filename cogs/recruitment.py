@@ -2826,13 +2826,27 @@ class RecruitmentCog(commands.Cog):
             if blacklist_role and blacklist_role not in member_obj.roles:
                 await member_obj.add_roles(blacklist_role)
 
-        log(f"User {member_id} has been blacklisted.")
+        if member_obj:
+            display = member_obj.display_name
+        else:
+            try:
+                # fetch_user always returns a User
+                user = await interaction.client.fetch_user(member_id)
+                display = user.name
+            except:
+                display = str(member_id)
+
+        log(f"User {member_id} ({display}) has been blacklisted.")
         activity_channel = self.resources.activity_ch
         if activity_channel:
-            embed = create_user_activity_log_embed("recruitment", "Blacklist User", interaction.user,
-                                                f"User {member_obj.display_name} has been blacklisted.")
+            embed = create_user_activity_log_embed(
+                "recruitment",
+                "Blacklist User",
+                interaction.user,
+                f"User **{display}** has been blacklisted."
+            )
             await activity_channel.send(embed=embed)
-        
+
         embed = discord.Embed(
             title="User Blacklisted",
             description=f"<@{member_id}> has been blacklisted.",
@@ -2848,57 +2862,64 @@ class RecruitmentCog(commands.Cog):
     )
     @handle_interaction_errors
     async def show_restrictions(self, interaction: discord.Interaction):
-        # 1) Permission check
+       # permission check
         recruiter = self.bot.resources.recruiter_role
         if not recruiter or recruiter not in interaction.user.roles:
             return await interaction.response.send_message(
                 "❌ You do not have permission to view this.", ephemeral=True
             )
 
-        # 2) Fetch records
+        # fetch your records
         records = await get_all_timeouts()
         if not records:
             return await interaction.response.send_message(
                 "✅ There are no active blacklists or timeouts.", ephemeral=True
             )
 
-        # 3) Build the embed
-        embed = discord.Embed(
-            title="🚨 Active Blacklists & Timeouts",
-            color=discord.Color.dark_red()
-        )
-        guild = interaction.guild
-
+        # build one line per record
+        lines = []
         for rec in records:
             user_id = int(rec["user_id"])
-            # Try to get Member, fallback to User
-            member = guild.get_member(user_id) or await interaction.client.fetch_user(user_id)
-            name    = member.display_name if hasattr(member, "display_name") else member.name
+            member = interaction.guild.get_member(user_id)
+            name   = member.display_name if member else str(user_id)
 
             if rec["type"] == "timeout":
-                # Parse expiration
+                # parse expiration
                 exp = rec["expires_at"]
                 if isinstance(exp, str):
-                    exp = datetime.fromisoformat(exp) if exp else None
-                if exp:
-                    ts = d_timestamp(exp.isoformat(), "f")
-                    value = f"Timeout until {ts}"
-                    icon  = "⏰"
-                else:
-                    value = "Timeout until: N/A"
-                    icon  = "⏰"
+                    try:
+                        exp = datetime.fromisoformat(exp)
+                    except:
+                        exp = None
+                ts = f"<t:{int(exp.timestamp())}:f>" if exp else "N/A"
+                icon, detail = "⏰", f"Timeout until {ts}"
             else:
-                value = "User is blacklisted"
-                icon  = "🚫"
+                icon, detail = "🚫", "Blacklisted"
 
-            embed.add_field(
-                name=f"{icon} {user_id} — {name}",
-                value=value,
-                inline=False
-            )
+            lines.append(f"{icon} `{user_id}` — {name}: {detail}")
 
-        # 4) Send
+        # join into a single code-block, respecting Discord's 4096-char limit
+        text = "\n".join(lines)
+        if len(text) > 3900:  # leave room for backticks + “…and N more”
+            # find how many lines we can keep
+            allowed = []
+            total = 0
+            for line in lines:
+                if total + len(line) + 1 > 3900:
+                    break
+                allowed.append(line)
+                total += len(line) + 1
+            remaining = len(lines) - len(allowed)
+            allowed.append(f"...and {remaining} more not shown.")
+            text = "\n".join(allowed)
+
+        embed = discord.Embed(
+            title="🚨 Active Blacklists & Timeouts",
+            description=f"```{text}```",
+            color=discord.Color.dark_red()
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+        
     @app_commands.command(
         name="remove_restriction",
         description="Remove blacklist/timeout from a user by mention or by user ID."
