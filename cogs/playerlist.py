@@ -17,10 +17,23 @@ class PlayerListCog(commands.Cog):
         self.bot = bot
         # Cache for Discord members
         self.discord_cache = {"timestamp": None, "members": {}}
+
+        # 1) Global queue cache  (for all regions except SEA)
         self.queue_cache = {
-            "timestamp": None,   # when we last fetched
-            "data":      None    # what we got
+            "timestamp": None,   # when we last fetched global data
+            "data":      None    # what we got from https://api.gtacnr.net/cnr/servers
         }
+        # A lock to enforce 1 s between each global external request
+        self.rate_limit_lock = asyncio.Lock()
+
+        # 2) SEA‐only queue cache (for https://sea.gtacnr.net/cnr/servers)
+        self.sea_queue_cache = {
+            "timestamp": None,   # when we last fetched SEA data
+            "data":      None    # what we got from https://sea.gtacnr.net/cnr/servers
+        }
+        # A separate lock to enforce 1 s between SEA requests
+        self.sea_rate_limit_lock = asyncio.Lock()
+
         # Dictionary to track server unreachable state for each region.
         self._server_unreachable = {}
         # Placeholder for aiosqlite connection
@@ -29,8 +42,6 @@ class PlayerListCog(commands.Cog):
         self.http: aiohttp.ClientSession = None
         # For playtime increment calculation.
         self.last_update_time = None
-        # A lock to enforce 1 s between each external request
-        self.rate_limit_lock = asyncio.Lock()
         # Kick off initialization (DB + HTTP + starts loops)
         self.bot.loop.create_task(self.init_database())
 
@@ -150,20 +161,70 @@ class PlayerListCog(commands.Cog):
                 queue_info[new] = queue_info.pop(old)
         return queue_info
 
+    async def fetch_queue_sea(self) -> dict:
+        """
+        Fetch the SEA-only queue from https://sea.gtacnr.net/cnr/servers
+        under its own sea_rate_limit_lock.
+        """
+        sea_url = "https://sea.gtacnr.net/cnr/servers"
+        try:
+            async with self.sea_rate_limit_lock:
+                async with self.http.get(sea_url) as resp:
+                    resp.raise_for_status()
+                    text = await resp.text()
+                # enforce 1s between SEA requests
+                await asyncio.sleep(1)
+        except Exception as e:
+            log(f"Error fetching SEA queue data: {e}", level="error")
+            return {}
+
+        # Decode JSON manually; expect a list with a single {"Id":"SEA", …}
+        try:
+            data = json.loads(text)
+        except Exception as e:
+            log(f"Error decoding SEA queue JSON: {e}", level="error")
+            return {}
+
+        # Return a dict keyed by "SEA"
+        return {entry["Id"]: entry for entry in data}
+
+
     async def get_cached_queue(self) -> dict:
         """
-        Return cached queue info if it's fresh; otherwise fetch & cache it once.
+        Return a merged dict of:
+          • global_data = every region except SEA (cached under self.queue_cache)
+          • sea_data    = the single SEA entry     (cached under self.sea_queue_cache)
+
+        Each cache is only refreshed if older than CHECK_INTERVAL seconds.
         """
         now = datetime.utcnow()
-        # Only refresh if we've never fetched, or if more than CHECK_INTERVAL has passed
+
+        # 1) Refresh “global” cache if stale
         if (
             self.queue_cache["timestamp"] is None
             or now - self.queue_cache["timestamp"] > timedelta(seconds=CHECK_INTERVAL)
         ):
-            # Fetch and store
-            self.queue_cache["data"] = await self.fetch_queue()
+            global_data = await self.fetch_queue()
+            self.queue_cache["data"] = global_data
             self.queue_cache["timestamp"] = now
-        return self.queue_cache["data"]
+        else:
+            global_data = self.queue_cache["data"] or {}
+
+        # 2) Refresh “SEA” cache if stale
+        if (
+            self.sea_queue_cache["timestamp"] is None
+            or now - self.sea_queue_cache["timestamp"] > timedelta(seconds=CHECK_INTERVAL)
+        ):
+            sea_data = await self.fetch_queue_sea()
+            self.sea_queue_cache["data"] = sea_data
+            self.sea_queue_cache["timestamp"] = now
+        else:
+            sea_data = self.sea_queue_cache["data"] or {}
+
+        # 3) Merge, giving SEA data precedence if a key collides
+        merged = {**global_data, **sea_data}
+        return merged
+
 
 
     async def fetch_fivem(self, region: str):
