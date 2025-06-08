@@ -796,7 +796,7 @@ class TraineeDetailsModal(discord.ui.Modal, title="Trainee Application Details")
             activity_channel = interaction.client.resources.activity_ch
             if activity_channel:
                 embed = create_user_activity_log_embed("recruitment", "Blacklist User", interaction.user,
-                                                    f"User {member.display_name}({member.mention}) has been blacklisted, due to being underage.")
+                                                    f"User {member.display_name}( {member.mention} ) has been blacklisted, due to being underage.")
                 await activity_channel.send(embed=embed)
             
             await interaction.response.send_message(
@@ -1840,7 +1840,7 @@ class RecruitmentCog(commands.Cog):
         elif days == 0:
             await add_timeout_record( data["user_id"], "blacklist")
             if member:
-                log_mention = f"{member.display_name}({member.mention})"
+                log_mention = f"{member.display_name}( {member.mention} )"
                 blacklist_role = self.resources.blacklist_role
                 if blacklist_role and blacklist_role not in member.roles:
                     try:
@@ -1861,7 +1861,7 @@ class RecruitmentCog(commands.Cog):
             expires = now + timedelta(days=days)
             await add_timeout_record( data["user_id"], "timeout", expires)
             if member:
-                log_mention = f"{member.display_name}({member.mention})"
+                log_mention = f"{member.display_name}( {member.mention} )"
                 timeout_role = self.resources.timeout_role
                 if timeout_role and timeout_role not in member.roles:
                     try:
@@ -1890,7 +1890,7 @@ class RecruitmentCog(commands.Cog):
         await interaction.followup.send(embed=embed)
         
         if member:
-            log_mention = f"{member.display_name}({member.mention})"
+            log_mention = f"{member.display_name}( {member.mention} )"
         else:
             log_mention = f"{data['user_id']} (not found in guild)"
         
@@ -2083,7 +2083,7 @@ class RecruitmentCog(commands.Cog):
                     log(f"HTTP error DMing user {member.id}: {e}", level="warning")
                 activity_channel = self.resources.activity_ch
                 if activity_channel:
-                    embed = create_user_activity_log_embed("recruitment", f"Promotion", interaction.user, f"User has promoted {member.display_name} ({member.mention}) to SWAT Officer. (Thread ID: <#{interaction.channel.id}>)")
+                    embed = create_user_activity_log_embed("recruitment", f"Promotion", interaction.user, f"User has promoted {member.display_name} ( {member.mention} ) to SWAT Officer. (Thread ID: <#{interaction.channel.id}>)")
                     await activity_channel.send(embed=embed)
         except discord.Forbidden:
             await interaction.followup.send("❌ Forbidden: Cannot assign roles or change nickname.", ephemeral=True)
@@ -2730,7 +2730,7 @@ class RecruitmentCog(commands.Cog):
         elif can_reapply == 0:
             await add_timeout_record( app_data["applicant_id"], "blacklist")
             if member:
-                log_mention = f"{member.display_name} ({member.mention})"
+                log_mention = f"{member.display_name} ( {member.mention} )"
                 blacklist_role = self.resources.blacklist_role
                 if blacklist_role and blacklist_role not in member.roles:
                     try:
@@ -2752,7 +2752,7 @@ class RecruitmentCog(commands.Cog):
             expires = now + timedelta(days=can_reapply)
             await add_timeout_record( app_data["applicant_id"], "timeout", expires)
             if member:
-                log_mention = f"{member.display_name}({member.mention})"
+                log_mention = f"{member.display_name}( {member.mention} )"
                 timeout_role = self.resources.timeout_role
                 if timeout_role and timeout_role not in member.roles:
                     try:
@@ -2927,7 +2927,7 @@ class RecruitmentCog(commands.Cog):
 
         # apply Discord role if they’re still here
         if member_obj:
-            log_mention = f"{member_obj.display_name}({member_obj.mention})"
+            log_mention = f"{member_obj.display_name}( {member_obj.mention} )"
             timeout_role = self.resources.timeout_role
             if timeout_role and timeout_role not in member_obj.roles:
                 try:
@@ -3010,7 +3010,7 @@ class RecruitmentCog(commands.Cog):
                 await member_obj.add_roles(blacklist_role)
 
         if member_obj:
-            log_mention = f"{member_obj.display_name}({member_obj.mention})"
+            log_mention = f"{member_obj.display_name}( {member_obj.mention} )"
             
         else:
             try:
@@ -3020,7 +3020,7 @@ class RecruitmentCog(commands.Cog):
             except:
                 log_mention = f"{member_id} (not found in guild)"
 
-        log(f"User {member_id} ({display}) has been blacklisted.")
+        log(f"User ({log_mention}) has been blacklisted.")
         activity_channel = self.resources.activity_ch
         if activity_channel:
             embed = create_user_activity_log_embed(
@@ -3176,12 +3176,12 @@ class RecruitmentCog(commands.Cog):
         activity_channel = self.resources.activity_ch
         if activity_channel:
             embed = create_user_activity_log_embed("recruitment", "Remove Restriction", interaction.user,
-                                                f"Removed restrictions from user {member_obj.display_name}({member_obj.mention}).")
+                                                f"Removed restrictions from user {member_obj.display_name}( {member_obj.mention} ).")
             await activity_channel.send(embed=embed)
         
         embed = discord.Embed(
             title="Restriction Removed",
-            description=f"Blacklist/timeout removed from {member_obj.display_name}({member_obj.mention}).",
+            description=f"Blacklist/timeout removed from {member_obj.display_name}( {member_obj.mention} ).",
             colour=discord.Colour.green()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
