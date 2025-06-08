@@ -55,6 +55,17 @@ MENTOR_EMOJI              = "<:mentor:1356721177028067338>"
 # -----------------------
 TOKEN_FILE = "token-test.txt"  # Changed to the testing token
 
+# Whitelist: Name → Role-ID
+ADDABLE_ROLES = {
+    "Leadership":    LEADERSHIP_ID,  # LEADERSHIP_ID
+    "Recruiters":    RECRUITER_ID,  # RECRUITER_ID
+    "Cadet":         CADET_ROLE,
+    "Trainee":       TRAINEE_ROLE,
+    "SWAT-Recruitment-Tester": 1334474663593771018
+}
+
+# Maximale Anzahl, bis wir nur noch ping statt invite
+MAX_INVITE_BATCH = 50
 # -----------------------
 # PLAYER LIST SETTINGS (UNCHANGED)
 # -----------------------

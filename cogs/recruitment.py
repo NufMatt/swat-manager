@@ -25,23 +25,38 @@ from cogs.db_utils import *
 def handle_interaction_errors(func: Callable[..., Any]) -> Callable[..., Any]:
     @wraps(func)
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
-        # Attempt to retrieve the interaction from kwargs or positional args.
-        interaction = kwargs.get("interaction")
-        if not interaction and len(args) >= 2:
-            interaction = args[1]
+        # retrieve the interaction object however you like
+        interaction = kwargs.get("interaction") or (args[1] if len(args) >= 2 else None)
         try:
             return await func(*args, **kwargs)
         except discord.Forbidden:
-            await interaction.response.send_message("❌ Bot lacks permission to perform this action.", ephemeral=True)
-            log(f"Forbidden error in {func.__name__}", level="error")
+            # if we already responded (e.g. deferred), use followup
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "❌ Bot lacks permission to perform this action.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Bot lacks permission to perform this action.",
+                    ephemeral=True
+                )
         except discord.HTTPException as e:
-            await interaction.response.send_message(f"❌ HTTP error: {e}", ephemeral=True)
-            log(f"HTTP error in {func.__name__}: {e}", level="error")
+            if interaction.response.is_done():
+                await interaction.followup.send(f"❌ HTTP error: {e}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"❌ HTTP error: {e}", ephemeral=True)
         except (ValueError, TypeError) as e:
-            await interaction.response.send_message(f"❌ Input error: {e}", ephemeral=True)
-            log(f"Input error in {func.__name__}: {e}", level="error")
+            if interaction.response.is_done():
+                await interaction.followup.send(f"❌ Input error: {e}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"❌ Input error: {e}", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Unexpected error: {e}", ephemeral=True)
+            # catch‐all—again check if we've already used response
+            if interaction.response.is_done():
+                await interaction.followup.send(f"❌ Unexpected error: {e}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"❌ Unexpected error: {e}", ephemeral=True)
             log(f"Unexpected error in {func.__name__}: {e}", level="error")
     return wrapper
 
@@ -54,10 +69,6 @@ def get_rounded_time() -> datetime:
     now = datetime.now()
     minutes_to_add = (15 - now.minute % 15) % 15
     return now + timedelta(minutes=minutes_to_add)
-
-def create_discord_timestamp(dt_obj: datetime) -> str:
-    unix_timestamp = int(dt_obj.timestamp())
-    return f"<t:{unix_timestamp}>"
 
 def create_embed() -> discord.Embed:
     embed = discord.Embed(
@@ -137,9 +148,9 @@ async def create_voting_embed(start_time, end_time, recruiter: int, region, inga
         embed.add_field(name="InGame Name:", value=ingame_name, inline=True)
         embed.add_field(name="Region:", value=title, inline=True)
         embed.add_field(name="", value="", inline=False)
-        embed.add_field(name="Voting started:", value=create_discord_timestamp(start_time), inline=True)
+        embed.add_field(name="Voting started:", value=d_timestamp(start_time), inline=True)
         end_title = "Voting will end: (Extended)" if extended else "Voting will end:"
-        embed.add_field(name=end_title, value=create_discord_timestamp(end_time), inline=True)
+        embed.add_field(name=end_title, value=d_timestamp(end_time), inline=True)
         embed.add_field(name="Thread managed by:", value=f"<@{recruiter}>", inline=False)
         return embed
     except (ValueError, TypeError) as e:
@@ -192,21 +203,42 @@ class ApplicationControlView(discord.ui.View):
         except discord.Forbidden:
             await interaction.response.send_message("❌ Bot lacks permission to lock/archive this thread!", ephemeral=True)
 
-    @discord.ui.button(
-        label="Accept",
-        style=discord.ButtonStyle.success,
-        custom_id="app_accept"
-    )
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, custom_id="app_accept")
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """
-        Calls the same logic as /app_accept.
-        """
+        # Must be in the thread
+        if not isinstance(interaction.channel, discord.Thread):
+            return await interaction.response.send_message(
+                "❌ This must be used in an application thread.", ephemeral=True
+            )
+
+        # Load the application data first
+        app_data = await get_application(str(interaction.channel.id))
+        if not app_data or app_data.get("is_closed"):
+            return await interaction.response.send_message(
+                "❌ This is not an open application thread.", ephemeral=True
+            )
+
+        # Applicant shouldn’t accept their own app
+        if interaction.user.id == int(app_data["applicant_id"]):
+            return await interaction.response.send_message(
+                "🤣 You think we’re **that** silly? You can’t accept your own application!",
+                ephemeral=True
+            )
+
+        # Now check recruiter permission
+        recruiter_role = interaction.client.resources.recruiter_role
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            return await interaction.response.send_message(
+                "❌ You do not have permission to accept applications.", ephemeral=True
+            )
+
+        # All good—ask for final confirmation
         cog = interaction.client.get_cog("RecruitmentCog")
-        if not cog:
-            await interaction.response.send_message("❌ Internal error: Cog not found!", ephemeral=True)
-            return
-        # Call the accept command's callback.
-        await cog.app_accept_command.callback(cog, interaction)
+        await interaction.response.send_message(
+            "⚠️ Are you **sure** you want to accept this application and add the user as a trainee?",
+            view=ConfirmAcceptView(interaction, cog),
+            ephemeral=True
+        )
 
     @discord.ui.button(
         label="Claim",
@@ -250,7 +282,23 @@ class ApplicationControlView(discord.ui.View):
         # Instead of calling the command directly, we use its callback.
         await cog.app_history.callback(cog, interaction, None, user_id_str)
 
+class ConfirmAcceptView(discord.ui.View):
+    def __init__(self, original_interaction: discord.Interaction, cog: commands.Cog):
+        super().__init__(timeout=60)
+        self.orig = original_interaction
+        self.cog = cog
 
+    @discord.ui.button(label="Yes, add trainee", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # perform the actual accept logic by invoking the slash-command callback
+        await interaction.response.defer()
+        await self.cog.app_accept_command.callback(self.cog, self.orig)
+        self.stop()
+
+    @discord.ui.button(label="No, cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("❌ Acceptance cancelled.", ephemeral=True)
+        self.stop()
 
 
 class CloseThreadView(discord.ui.View):
@@ -748,7 +796,7 @@ class TraineeDetailsModal(discord.ui.Modal, title="Trainee Application Details")
             activity_channel = interaction.client.resources.activity_ch
             if activity_channel:
                 embed = create_user_activity_log_embed("recruitment", "Blacklist User", interaction.user,
-                                                    f"User {member.display_name} has been blacklisted, due to being underage.")
+                                                    f"User {member.display_name}({member.mention}) has been blacklisted, due to being underage.")
                 await activity_channel.send(embed=embed)
             
             await interaction.response.send_message(
@@ -800,7 +848,7 @@ class NameChangeModal(discord.ui.Modal, title="Request Name Change"):
             new_name_final = new_name_cleaned + (" " + suffix if suffix else "")
             embed = discord.Embed(
                 title="New Name Change Request:",
-                description=f"User <@{interaction.user.id}> has requested a name change!",
+                description=f"User **{interaction.user.display_name}** (<@{interaction.user.id}>) has requested a name change!",
                 colour=0x298ecb
             )
             embed.add_field(name="New Name:", value=f"```{new_name_final or 'N/A'}```", inline=True)
@@ -934,12 +982,18 @@ async def finalize_trainee_request(interaction: discord.Interaction, user_id_str
         ]
         # 2) Build unified list of events
         events = []
+        # — only add entries that *do* have a thread_id —
         for entry in filtered_history:
-            ts = entry["timestamp"]
-            url = f"https://discord.com/channels/{GUILD_ID}/{entry['thread_id']}"
+            thread_id = entry.get("thread_id")
+            if not thread_id:
+                continue
+            ts  = entry["timestamp"]
+            url = f"https://discord.com/channels/{GUILD_ID}/{thread_id}"
             events.append((ts, f"- [Application]({url})"))
+
+        # — now add any “closed‐attempt” logs —
         for att in recent_attempts:
-            ts = att["timestamp"]
+            ts  = att["timestamp"]
             url = att["log_url"]
             events.append((ts, f"- [Log Entry]({url})"))
 
@@ -1786,29 +1840,44 @@ class RecruitmentCog(commands.Cog):
         elif days == 0:
             await add_timeout_record( data["user_id"], "blacklist")
             if member:
+                log_mention = f"{member.display_name}({member.mention})"
                 blacklist_role = self.resources.blacklist_role
                 if blacklist_role and blacklist_role not in member.roles:
                     try:
                         await member.add_roles(blacklist_role)
                     except Exception as e:
                         log(f"Error assigning blacklist role to {data['user_id']}: {e}", level="error")
+            else:
+                log_mention = f"{data['user_id']} (not found in guild)"
+            
             log(f"User {data['user_id']} has been blacklisted.")
-            create_user_activity_log_embed("recruitment", "Blacklisted User", interaction.user,
-                                        f"User {data['user_id']} has been blacklisted. (Thread ID: <#{interaction.channel.id}>)")
+            activity_channel = self.resources.activity_ch
+            if activity_channel:
+                log_embed = create_user_activity_log_embed("recruitment", "Blacklisted User", interaction.user,
+                                            f"User {log_mention} has been blacklisted. (Thread ID: <#{interaction.channel.id}>)")
+                await activity_channel.send(embed=log_embed)
             reapply_info = "User has been blacklisted."
         elif days >= 1:
             expires = now + timedelta(days=days)
             await add_timeout_record( data["user_id"], "timeout", expires)
             if member:
+                log_mention = f"{member.display_name}({member.mention})"
                 timeout_role = self.resources.timeout_role
                 if timeout_role and timeout_role not in member.roles:
                     try:
                         await member.add_roles(timeout_role)
                     except Exception as e:
                         log(f"Error assigning timeout role to {data['user_id']}: {e}", level="error")
+            else:
+                log_mention = f"{data['user_id']} (not found in guild)"
+                
             log(f"User {data['user_id']} has been timed out until {expires}.")
-            create_user_activity_log_embed("recruitment", "Timed Out User", interaction.user,
-                                        f"User {data['user_id']} has been timed out until {expires}. (Thread ID: <#{interaction.channel.id}>)")
+            expires_ts = d_timestamp(expires, "D")
+            activity_channel = self.resources.activity_ch
+            if activity_channel:
+                log_embed = create_user_activity_log_embed("recruitment", "Timed Out User", interaction.user,
+                                            f"User {log_mention} has been timed out until {expires_ts}. (Thread ID: <#{interaction.channel.id}>)")
+                await activity_channel.send(embed=log_embed)
             reapply_info = f"User is timed out until {expires.strftime('%d-%m-%Y')}."
         
         embed = discord.Embed(
@@ -1820,10 +1889,15 @@ class RecruitmentCog(commands.Cog):
         embed.set_footer(text="🔒This thread is locked now!")
         await interaction.followup.send(embed=embed)
         
+        if member:
+            log_mention = f"{member.display_name}({member.mention})"
+        else:
+            log_mention = f"{data['user_id']} (not found in guild)"
+        
         activity_channel = self.resources.activity_ch
         if activity_channel:
             log_embed = create_user_activity_log_embed("recruitment", "Removed Trainee/Cadet", interaction.user,
-                                                        f"User {data['user_id']} removed. (Thread ID: <#{interaction.channel.id}>)")
+                                                        f"User {log_mention} removed. (Thread ID: <#{interaction.channel.id}>)")
             await activity_channel.send(embed=log_embed)
 
 
@@ -2009,7 +2083,7 @@ class RecruitmentCog(commands.Cog):
                     log(f"HTTP error DMing user {member.id}: {e}", level="warning")
                 activity_channel = self.resources.activity_ch
                 if activity_channel:
-                    embed = create_user_activity_log_embed("recruitment", f"Promotion", interaction.user, f"User has promoted to SWAT Officer. (Thread ID: <#{interaction.channel.id}>)")
+                    embed = create_user_activity_log_embed("recruitment", f"Promotion", interaction.user, f"User has promoted {member.display_name} ({member.mention}) to SWAT Officer. (Thread ID: <#{interaction.channel.id}>)")
                     await activity_channel.send(embed=embed)
         except discord.Forbidden:
             await interaction.followup.send("❌ Forbidden: Cannot assign roles or change nickname.", ephemeral=True)
@@ -2150,7 +2224,7 @@ class RecruitmentCog(commands.Cog):
                         voting_embed.add_field(name="InGame Name:", value=data["ingame_name"], inline=True)
                         voting_embed.add_field(name="Region:", value=title, inline=True)
                         voting_embed.add_field(name="", value="", inline=False)
-                        voting_embed.add_field(name="Voting started:", value=create_discord_timestamp(start_time), inline=True)
+                        voting_embed.add_field(name="Voting started:", value=d_timestamp(start_time), inline=True)
                         voting_embed.add_field(name="Voting has ended!", value="", inline=True)
                         voting_embed.add_field(name="", value="", inline=False)
                         voting_embed.add_field(name="Thread managed by:", value=f"<@{data['recruiter_id']}>", inline=True)
@@ -2275,7 +2349,8 @@ class RecruitmentCog(commands.Cog):
                     except Exception as e:
                         log(f"Error assigning timeout role to {app_data['applicant_id']}: {e}", level="error")
             log(f"User {app_data['applicant_id']} has been timed out until {expires}.")
-            reapply_info = f"User is timed out until {expires.strftime('%d-%m-%Y')} and may reapply after that date."
+            expires_ts = d_timestamp(expires, "D")
+            reapply_info = f"User is timed out until {expires_ts} and may reapply after that date."
 
         embed = discord.Embed(
             title="❌ This application has been removed!",
@@ -2304,7 +2379,8 @@ class RecruitmentCog(commands.Cog):
     @handle_interaction_errors
     async def app_accept_command(self, interaction: discord.Interaction):
         # Immediately defer so we can use followup responses
-        await interaction.response.defer(thinking=True)
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
         
         # Use followup.send for error responses (ephemeral)
         if not is_in_correct_guild(interaction):
@@ -2431,7 +2507,7 @@ class RecruitmentCog(commands.Cog):
         acceptance_embed.add_field(name="Recruiter: ", value=f"<@{interaction.user.id}>", inline=False)
         acceptance_embed.set_footer(text="🔒 This thread is locked now.")
         
-        dm_embed = discord.Embed(title=":white_check_mark: Your application as a S.W.A.T Trainee has been accepted!", description=":tada: Congratulations!\nYou’ve automatically received your Trainee role — the first step is complete!\n\n:pushpin: All additional information can be found in the #「:pushpin:」trainee-info channel.\nPlease make sure to carefully read through everything to get started on the right foot.\n\nWelcome aboard, and good luck on your journey!\n\n", colour=discord.Color.green())
+        dm_embed = discord.Embed(title=":white_check_mark: Your application as a S.W.A.T Trainee has been accepted!", description=":tada: Congratulations!\nYou’ve automatically received your Trainee role — the first step is complete!\n\n:pushpin: All additional information can be found in the <#1084610059390156951> \nPlease make sure to carefully read through everything to get started on the right foot.\n\nWelcome aboard, and good luck on your journey!\n\n", colour=discord.Color.green())
         dm_embed.add_field(name="📝 Help Us Improve – Application Feedback Form", value=f"We’d love to hear your thoughts on the application process! Your feedback helps us improve the experience for everyone.\n\n👉 [Click here to fill out the feedback form]({FEEDBACK_FORM_LINK})\n\nIt only takes a minute, and your input is greatly appreciated. Thank you!", inline=False)
         
         # Send a DM to the applicant
@@ -2654,29 +2730,45 @@ class RecruitmentCog(commands.Cog):
         elif can_reapply == 0:
             await add_timeout_record( app_data["applicant_id"], "blacklist")
             if member:
+                log_mention = f"{member.display_name} ({member.mention})"
                 blacklist_role = self.resources.blacklist_role
                 if blacklist_role and blacklist_role not in member.roles:
                     try:
                         await member.add_roles(blacklist_role)
                     except Exception as e:
                         log(f"Error assigning blacklist role to {app_data['applicant_id']}: {e}", level="error")
+            else:
+                log_mention = f"{app_data['applicant_id']} (not found in guild)"
+                
             log(f"User {app_data['applicant_id']} has been blacklisted.")
-            create_user_activity_log_embed("recruitment", "Blacklist User", interaction.user,
-                                        f"User {app_data['applicant_id']} has been blacklisted.")
+            activity_channel = self.resources.activity_ch
+            if activity_channel:
+                log_embed = create_user_activity_log_embed("recruitment", "Blacklist User", interaction.user,
+                                            f"User {log_mention} has been blacklisted. (Thread ID: <#{interaction.channel.id}>)")
+                await activity_channel.send(embed=log_embed)
+            
             reapply_info = "User has been blacklisted."
         elif can_reapply >= 1:
             expires = now + timedelta(days=can_reapply)
             await add_timeout_record( app_data["applicant_id"], "timeout", expires)
             if member:
+                log_mention = f"{member.display_name}({member.mention})"
                 timeout_role = self.resources.timeout_role
                 if timeout_role and timeout_role not in member.roles:
                     try:
                         await member.add_roles(timeout_role)
                     except Exception as e:
                         log(f"Error assigning timeout role to {app_data['applicant_id']}: {e}", level="error")
+            else:
+                log_mention = f"{app_data['applicant_id']} (not found in guild)"
+            
             log(f"User {app_data['applicant_id']} has been timed out until {expires}.")
-            create_user_activity_log_embed("recruitment", "Timeout User", interaction.user,
-                                        f"User {app_data['applicant_id']} has been timed out until {expires}.")
+            expires_ts = d_timestamp(expires, "D")
+            activity_channel = self.resources.activity_ch
+            if activity_channel:
+                log_embed = create_user_activity_log_embed("recruitment", "Timeout User", interaction.user,
+                                            f"User {log_mention} has been timed out until {expires_ts}. (Thread ID: <#{interaction.channel.id}>)")
+                await activity_channel.send(embed=log_embed)
             reapply_info = f"User can reapply on {expires.strftime('%d-%m-%Y')}."
         
         # Mark the application as closed and update status
@@ -2774,6 +2866,97 @@ class RecruitmentCog(commands.Cog):
 
 
     @app_commands.command(
+        name="app_timeout",
+        description="Manually timeout a user from applying for SWAT."
+    )
+    @app_commands.describe(
+        target="The user to timeout (mention)",
+        user_id="The user ID to timeout",
+        days="How many days to prevent them from applying"
+    )
+    @handle_interaction_errors
+    async def app_timeout(
+        self,
+        interaction: discord.Interaction,
+        target: discord.Member = None,
+        user_id: str = None,
+        days: int = 7
+    ):
+        # exactly one of target or user_id
+        if (target is None) == (user_id is None):
+            return await interaction.response.send_message(
+                "❌ Please specify exactly one of `target` or `user_id`.",
+                ephemeral=True
+            )
+
+        # guild check
+        if not is_in_correct_guild(interaction):
+            return await interaction.response.send_message(
+                "❌ This command can only be used in this server.",
+                ephemeral=True
+            )
+
+        # permission check
+        recruiter_role = self.bot.resources.recruiter_role
+        if not recruiter_role or recruiter_role not in interaction.user.roles:
+            return await interaction.response.send_message(
+                "❌ You do not have permission to timeout applications.",
+                ephemeral=True
+            )
+
+        # resolve member_id and optional Member
+        if target:
+            member_id = target.id
+            member_obj = target
+        else:
+            try:
+                member_id = int(user_id)
+            except ValueError:
+                return await interaction.response.send_message(
+                    "❌ `user_id` must be a valid integer.",
+                    ephemeral=True
+                )
+            member_obj = interaction.guild.get_member(member_id)
+
+        # compute expiration
+        now = datetime.utcnow()
+        expires = now + timedelta(days=days)
+
+        # record in DB
+        await add_timeout_record(str(member_id), "timeout", expires)
+
+        # apply Discord role if they’re still here
+        if member_obj:
+            log_mention = f"{member_obj.display_name}({member_obj.mention})"
+            timeout_role = self.resources.timeout_role
+            if timeout_role and timeout_role not in member_obj.roles:
+                try:
+                    await member_obj.add_roles(timeout_role)
+                except discord.Forbidden:
+                    pass
+        else:
+            log_mention = f"{member_id} (not found in guild)"
+
+        # confirmation
+        expires_ts = d_timestamp(expires, "D")
+        await interaction.response.send_message(
+            f"✅ {log_mention} is now timed out from applying for **{days}** day{'s' if days != 1 else ''} (until {expires_ts}).",
+            ephemeral=True
+        )
+
+        # log to your activity channel
+        activity_channel = self.resources.activity_ch
+        if activity_channel:
+            log_embed = create_user_activity_log_embed(
+                "recruitment",
+                "Application Timeout",
+                interaction.user,
+                f"{log_mention} is timed out until {expires_ts}."
+            )
+            await activity_channel.send(embed=log_embed)
+
+
+    @app_commands.command(
         name="blacklist",
         description="Manually blacklist a user by mention or by user ID."
     )
@@ -2827,14 +3010,15 @@ class RecruitmentCog(commands.Cog):
                 await member_obj.add_roles(blacklist_role)
 
         if member_obj:
-            display = member_obj.display_name
+            log_mention = f"{member_obj.display_name}({member_obj.mention})"
+            
         else:
             try:
                 # fetch_user always returns a User
                 user = await interaction.client.fetch_user(member_id)
-                display = user.name
+                log_mention = f"{user.display_name}({user.mention})"
             except:
-                display = str(member_id)
+                log_mention = f"{member_id} (not found in guild)"
 
         log(f"User {member_id} ({display}) has been blacklisted.")
         activity_channel = self.resources.activity_ch
@@ -2843,7 +3027,7 @@ class RecruitmentCog(commands.Cog):
                 "recruitment",
                 "Blacklist User",
                 interaction.user,
-                f"User **{display}** has been blacklisted."
+                f"User **{log_mention}** has been blacklisted."
             )
             await activity_channel.send(embed=embed)
 
@@ -2992,12 +3176,12 @@ class RecruitmentCog(commands.Cog):
         activity_channel = self.resources.activity_ch
         if activity_channel:
             embed = create_user_activity_log_embed("recruitment", "Remove Restriction", interaction.user,
-                                                f"Removed restrictions from user {member_obj.display_name}.")
+                                                f"Removed restrictions from user {member_obj.display_name}({member_obj.mention}).")
             await activity_channel.send(embed=embed)
         
         embed = discord.Embed(
             title="Restriction Removed",
-            description=f"Blacklist/timeout removed from <@{member_id}>.",
+            description=f"Blacklist/timeout removed from {member_obj.display_name}({member_obj.mention}).",
             colour=discord.Colour.green()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)

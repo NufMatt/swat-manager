@@ -5,7 +5,7 @@ import discord
 from discord import app_commands, ButtonStyle
 from discord.ext import commands, tasks
 import re
-import aiosqlite
+import asyncio
 from datetime import datetime, timedelta, time
 from config import *
 from messages import OPEN_TICKET_EMBED_TEXT
@@ -695,6 +695,76 @@ class TicketCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
+    @app_commands.command(
+        name="ticket_add",
+        description="Add a user or ping a whitelisted group in the current ticket thread."
+    )
+    @app_commands.describe(
+        user="The user to add to this ticket",
+        group="Which whitelisted group to ping"
+    )
+    @app_commands.choices(group=[
+        app_commands.Choice(name=label, value=label)
+        for label in ADDABLE_ROLES.keys()
+    ])
+    async def ticket_add(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member = None,
+        group: str = None
+    ):
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            return await interaction.response.send_message(
+                "❌ Use this inside a ticket thread.", ephemeral=True
+            )
+        if not interaction.guild or interaction.guild.id != GUILD_ID:
+            return await interaction.response.send_message(
+                "❌ This command only works in the configured guild.", ephemeral=True
+            )
+        if not await get_ticket_info(str(thread.id)):
+            return await interaction.response.send_message(
+                "❌ This thread isn’t a registered ticket.", ephemeral=True
+            )
+
+        recruiter = interaction.client.resources.recruiter_role
+        leadership = interaction.client.resources.leadership_role
+        if not any(r in interaction.user.roles for r in (recruiter, leadership)):
+            return await interaction.response.send_message(
+                "❌ You don’t have permission to add users or ping groups.", ephemeral=True
+            )
+
+        if (user and group) or (not user and not group):
+            return await interaction.response.send_message(
+                "❌ Provide exactly one of `user` or `group`.", ephemeral=True
+            )
+
+        # Add a single user to the thread
+        if user:
+            try:
+                # await thread.add_user(user)
+                await thread.send(f"**{interaction.user.display_name}** added {user.mention} to this ticket.")
+            except discord.Forbidden:
+                return await interaction.response.send_message(
+                    "❌ Bot lacks permission to add that user.", ephemeral=True
+                )
+            return await interaction.response.send_message("✅ User added!", ephemeral=True)
+
+        # Ping a whitelisted group only
+        role_id = ADDABLE_ROLES.get(group)
+        role = interaction.guild.get_role(role_id)
+        if not role:
+            return await interaction.response.send_message(
+                "❌ Role not found on this server.", ephemeral=True
+            )
+        await thread.send(
+            f"**{interaction.user.display_name}** added {role.mention} to this ticket."
+        )
+        await interaction.response.send_message("✅ Group ping sent!", ephemeral=True)
+
+
+
     @app_commands.command(name="ticket_close", description="Close the current ticket.")
     async def ticket_close(self, interaction: discord.Interaction):
         thread = interaction.channel
@@ -769,9 +839,9 @@ class TicketCog(commands.Cog):
         done_iso = datetime.utcnow().isoformat()
         await update_ticket_done(str(thread.id), done_iso)
         embed = discord.Embed(title="✅ Ticket marked as done!",
-                            description="🔒This ticket will auto-lock in 24 hours.\nYou can still close it immediately with the button below.",
+                            description="**If you don’t need any more help,\nclick the “Close Ticket” button below to close it immediately.** \n\n 🔒This ticket will auto-lock in 24 hours.",
                             colour=0x00d500)
-        embed.set_footer(text="⌨️Writing in this ticket will cancel the automatic closing!")
+        embed.set_footer(text="⌨️ Sending a message here will cancel the automatic closing.")
         await interaction.response.send_message(embed=embed, view=CloseThreadView())
 
 

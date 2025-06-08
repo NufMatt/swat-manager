@@ -127,7 +127,7 @@ class VerificationCog(commands.Cog):
 
     def create_embed(self, title: str, description: str, colour: int) -> discord.Embed:
         embed = discord.Embed(title=title, description=description, colour=colour)
-        embed.set_author(name="S.W.A.T. Verification Bot")
+        embed.set_author(name="S.W.A.T Verification Bot")
         return embed
     
     @commands.Cog.listener()

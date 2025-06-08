@@ -4,7 +4,7 @@ import logging
 import inspect
 import aiosqlite
 from datetime import datetime, timezone
-from typing import Optional, Dict
+from typing import Optional, Dict, Union
 import pytz
 DATABASE_FILE = "data.db"
 
@@ -138,25 +138,15 @@ def remove_stored_embed(embed_key: str) -> bool:
         conn.close()
         return False
 
-def d_timestamp(iso_str: str, style: str = "") -> str:
+def d_timestamp(dt_or_iso: Union[str, datetime], style: str = "f") -> str:
     """
-    Convert an ISO-format datetime string into a Discord timestamp tag,
-    treating naïve datetimes as Europe/Berlin local time via pytz.
+    Turn either an ISO‐format string or a datetime into a Discord timestamp.
+    style defaults to 'f' (e.g. Jan 1 2025, 3:04 PM).
     """
-    # 1) Parse ISO; handle trailing 'Z' if needed
-    try:
-        dt = datetime.fromisoformat(iso_str)
-    except ValueError:
-        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-
-    # 2) If no tzinfo, assume Europe/Berlin
-    if dt.tzinfo is None:
-        berlin = pytz.timezone("Europe/Berlin")
-        dt = berlin.localize(dt)
-
-    # 3) Convert to UTC
-    dt_utc = dt.astimezone(pytz.utc)
-
-    # 4) Build Discord tag
-    unix_ts = int(dt_utc.timestamp())
-    return f"<t:{unix_ts}:{style}>" if style else f"<t:{unix_ts}>"
+    if isinstance(dt_or_iso, datetime):
+        dt = dt_or_iso
+    else:
+        # if you pass in a datetime, fromisoformat would choke on it
+        dt = datetime.fromisoformat(dt_or_iso)
+    ts = int(dt.timestamp())
+    return f"<t:{ts}:{style}>"
