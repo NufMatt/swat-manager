@@ -1856,7 +1856,7 @@ class RecruitmentCog(commands.Cog):
             activity_channel = self.resources.activity_ch
             if activity_channel:
                 log_embed = create_user_activity_log_embed("recruitment", "Blacklisted User", interaction.user,
-                                            f"User {log_mention} has been blacklisted. (Thread ID: <#{interaction.channel.id}>)")
+                                            f"User **{log_mention}** has been blacklisted. (Thread ID: <#{interaction.channel.id}>)")
                 await activity_channel.send(embed=log_embed)
             reapply_info = "User has been blacklisted."
         elif days >= 1:
@@ -1878,7 +1878,7 @@ class RecruitmentCog(commands.Cog):
             activity_channel = self.resources.activity_ch
             if activity_channel:
                 log_embed = create_user_activity_log_embed("recruitment", "Timed Out User", interaction.user,
-                                            f"User {log_mention} has been timed out until {expires_ts}. (Thread ID: <#{interaction.channel.id}>)")
+                                            f"User **{log_mention}** has been timed out until {expires_ts}. (Thread ID: <#{interaction.channel.id}>)")
                 await activity_channel.send(embed=log_embed)
             reapply_info = f"User is timed out until {expires.strftime('%d-%m-%Y')}."
         
@@ -1899,7 +1899,7 @@ class RecruitmentCog(commands.Cog):
         activity_channel = self.resources.activity_ch
         if activity_channel:
             log_embed = create_user_activity_log_embed("recruitment", "Removed Trainee/Cadet", interaction.user,
-                                                        f"User {log_mention} removed. (Thread ID: <#{interaction.channel.id}>)")
+                                                        f"User **{log_mention}** removed. (Thread ID: <#{interaction.channel.id}>)")
             await activity_channel.send(embed=log_embed)
 
 
@@ -2746,7 +2746,7 @@ class RecruitmentCog(commands.Cog):
             activity_channel = self.resources.activity_ch
             if activity_channel:
                 log_embed = create_user_activity_log_embed("recruitment", "Blacklist User", interaction.user,
-                                            f"User {log_mention} has been blacklisted. (Thread ID: <#{interaction.channel.id}>)")
+                                            f"User **{log_mention}** has been blacklisted. (Thread ID: <#{interaction.channel.id}>)")
                 await activity_channel.send(embed=log_embed)
             
             reapply_info = "User has been blacklisted."
@@ -2769,7 +2769,7 @@ class RecruitmentCog(commands.Cog):
             activity_channel = self.resources.activity_ch
             if activity_channel:
                 log_embed = create_user_activity_log_embed("recruitment", "Timeout User", interaction.user,
-                                            f"User {log_mention} has been timed out until {expires_ts}. (Thread ID: <#{interaction.channel.id}>)")
+                                            f"User **{log_mention}** has been timed out until {expires_ts}. (Thread ID: <#{interaction.channel.id}>)")
                 await activity_channel.send(embed=log_embed)
             reapply_info = f"User can reapply on {expires.strftime('%d-%m-%Y')}."
         
@@ -2953,7 +2953,7 @@ class RecruitmentCog(commands.Cog):
                 "recruitment",
                 "Application Timeout",
                 interaction.user,
-                f"{log_mention} is timed out until {expires_ts}."
+                f"**{log_mention}** is timed out until {expires_ts}."
             )
             await activity_channel.send(embed=log_embed)
 
