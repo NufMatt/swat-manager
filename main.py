@@ -109,6 +109,7 @@ async def main():
         await bot.load_extension("cogs.playerlist")
         await bot.load_extension("cogs.status")
         await bot.load_extension("cogs.verification")
+        # await bot.load_extension("cogs.fun")
         # await bot.load_extension("cogs.example_cog")
         await bot.start(TOKEN)
 
