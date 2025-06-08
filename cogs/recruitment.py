@@ -796,7 +796,7 @@ class TraineeDetailsModal(discord.ui.Modal, title="Trainee Application Details")
             activity_channel = interaction.client.resources.activity_ch
             if activity_channel:
                 embed = create_user_activity_log_embed("recruitment", "Blacklist User", interaction.user,
-                                                    f"User {member.display_name}( {member.mention} ) has been blacklisted, due to being underage.")
+                                                    f"User {member.display_name} ( <@{member.id}> ) has been blacklisted, due to being underage.")
                 await activity_channel.send(embed=embed)
             
             await interaction.response.send_message(
@@ -1226,38 +1226,36 @@ class RecruitmentCog(commands.Cog):
         pass
 
 
-    @tasks.loop(hours=1)
+    @tasks.loop(minutes=1)
     async def check_ban_history_and_application_reminders(self):
         await self.bot.wait_until_ready()
-        now_iso = datetime.utcnow().isoformat()
+        now = datetime.utcnow()
+        now_iso = now.isoformat()
 
         async with aiosqlite.connect(DATABASE_FILE) as db:
-            # Fetch only open threads never reminded OR last reminded ≥24h ago
             async with db.execute("""
                 SELECT thread_id, applicant_id, recruiter_id, starttime,
-                       ban_history_sent, ban_history_reminder_count
+                    ban_history_sent, ban_history_reminder_count
                 FROM application_threads
                 WHERE is_closed = 0
-                  AND (
+                AND (
+                    (
                     last_reminder_sent IS NULL
-                    OR datetime(last_reminder_sent) <= datetime('now', '-24 hours')
-                  )
+                    AND datetime(starttime) <= datetime('now', '-3 hours')
+                    )
+                    OR (
+                    last_reminder_sent IS NOT NULL
+                    AND datetime(last_reminder_sent) <= datetime('now', '-24 hours')
+                    )
+                )
             """) as cursor:
                 rows = await cursor.fetchall()
 
             for thread_id, applicant_id, recruiter_id, start_iso, ban_history_sent, reminder_count in rows:
                 reminder_count = reminder_count or 0
-                # 1) skip until 24h after application start
-                try:
-                    start_dt = datetime.fromisoformat(start_iso)
-                except ValueError:
-                    continue
-                if (datetime.utcnow() - start_dt) <= timedelta(hours=24):
-                    continue
 
                 # 2) respect silence
                 if await is_application_silenced(thread_id):
-                    log(f"Thread {thread_id} silenced; skipping reminder.", level="info")
                     continue
 
                 # 3) ensure thread exists
@@ -1265,15 +1263,18 @@ class RecruitmentCog(commands.Cog):
                 if not isinstance(thread, discord.Thread):
                     continue
 
-
-                # 4) build embed & mention
+                # 4) pick embed & who to mention
                 if ban_history_sent:
+                    # recruiter reminder
                     embed = discord.Embed(
                         title="⏰ Reminder: This application is still open and awaiting review.",
                         colour=0xEFE410
                     )
                     mention = f"<@{recruiter_id}>" if recruiter_id else f"<@&{RECRUITER_ID}>"
+
                 else:
+                    # applicant reminders: first two are the “please post ban history”,
+                    # third (i.e. reminder_count >= 2) is the “final” ping
                     if reminder_count < 2:
                         title = "⏰ Reminder: Please post your ban history as a picture in this thread!"
                         mention = f"<@{applicant_id}>"
@@ -1284,27 +1285,27 @@ class RecruitmentCog(commands.Cog):
                             if recruiter_id else
                             f"<@{applicant_id}> <@&{RECRUITER_ID}>"
                         )
+
                     embed = discord.Embed(title=title, colour=0xEFE410)
 
-                    # bump the counter
+                    # increment our counter
                     await db.execute(
                         "UPDATE application_threads SET ban_history_reminder_count = ? WHERE thread_id = ?",
                         (reminder_count + 1, thread_id)
                     )
 
-                # 5) send it
+                # 5) send the ping + embed
                 try:
                     await thread.send(content=mention, embed=embed)
                 except Exception as e:
                     log(f"Error sending reminder in thread {thread_id}: {e}", level="error")
 
-                # 6) record timestamp
+                # 6) record when we sent it
                 await db.execute(
                     "UPDATE application_threads SET last_reminder_sent = ? WHERE thread_id = ?",
                     (now_iso, thread_id)
                 )
 
-            # commit any counter-updates
             await db.commit()
 
     @tasks.loop(minutes=30)
@@ -1436,31 +1437,32 @@ class RecruitmentCog(commands.Cog):
 
         # Check each attachment for an image and update DB accordingly
         for att in message.attachments:
-            is_image = False
-            if att.content_type and att.content_type.startswith("image/"):
-                is_image = True
-            elif att.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                is_image = True
-            if is_image:
-                try:
-                    async with aiosqlite.connect(DATABASE_FILE) as db:
-                        await db.execute(
-                            "UPDATE application_threads SET ban_history_sent = 1 WHERE thread_id = ?",
-                            (message.channel.id,)
-                        )
-                        await db.commit()
-                except Exception as e:
-                    log(f"DB update error in on_message for thread {message.channel.id}: {e}", level="error")
+            if not app_data.get("recruiter_id"):
+                is_image = False
+                if att.content_type and att.content_type.startswith("image/"):
+                    is_image = True
+                elif att.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                    is_image = True
+                if is_image:
+                    try:
+                        async with aiosqlite.connect(DATABASE_FILE) as db:
+                            await db.execute(
+                                "UPDATE application_threads SET ban_history_sent = 1 WHERE thread_id = ?",
+                                (message.channel.id,)
+                            )
+                            await db.commit()
+                    except Exception as e:
+                        log(f"DB update error in on_message for thread {message.channel.id}: {e}", level="error")
                     
-                if message.channel.id not in self.ban_history_submitted:
-                    confirmation = discord.Embed(
-                        title="✅ Ban History Submitted!",
-                        description="Your ban history has been received. A recruiter will review your application shortly.",
-                        color=discord.Color.green()
-                    )
-                    await message.channel.send(embed=confirmation)
-                    self.ban_history_submitted.add(message.channel.id)
-                break
+                    if message.channel.id not in self.ban_history_submitted:
+                        confirmation = discord.Embed(
+                            title="✅ Ban History Submitted!",
+                            description="Your ban history has been received. A recruiter will review your application shortly.",
+                            color=discord.Color.green()
+                        )
+                        await message.channel.send(embed=confirmation)
+                        self.ban_history_submitted.add(message.channel.id)
+                    break
 
 
     @commands.Cog.listener()
@@ -1840,7 +1842,7 @@ class RecruitmentCog(commands.Cog):
         elif days == 0:
             await add_timeout_record( data["user_id"], "blacklist")
             if member:
-                log_mention = f"{member.display_name}( {member.mention} )"
+                log_mention = f"{member.display_name} ( <@{member.id}> )"
                 blacklist_role = self.resources.blacklist_role
                 if blacklist_role and blacklist_role not in member.roles:
                     try:
@@ -1861,7 +1863,7 @@ class RecruitmentCog(commands.Cog):
             expires = now + timedelta(days=days)
             await add_timeout_record( data["user_id"], "timeout", expires)
             if member:
-                log_mention = f"{member.display_name}( {member.mention} )"
+                log_mention = f"{member.display_name} ( <@{member.id}> )"
                 timeout_role = self.resources.timeout_role
                 if timeout_role and timeout_role not in member.roles:
                     try:
@@ -1890,7 +1892,7 @@ class RecruitmentCog(commands.Cog):
         await interaction.followup.send(embed=embed)
         
         if member:
-            log_mention = f"{member.display_name}( {member.mention} )"
+            log_mention = f"{member.display_name} ( <@{member.id}> )"
         else:
             log_mention = f"{data['user_id']} (not found in guild)"
         
@@ -2083,7 +2085,7 @@ class RecruitmentCog(commands.Cog):
                     log(f"HTTP error DMing user {member.id}: {e}", level="warning")
                 activity_channel = self.resources.activity_ch
                 if activity_channel:
-                    embed = create_user_activity_log_embed("recruitment", f"Promotion", interaction.user, f"User has promoted {member.display_name} ( {member.mention} ) to SWAT Officer. (Thread ID: <#{interaction.channel.id}>)")
+                    embed = create_user_activity_log_embed("recruitment", f"Promotion", interaction.user, f"User has promoted {member.display_name} ( <@{member.id}> ) to SWAT Officer. (Thread ID: <#{interaction.channel.id}>)")
                     await activity_channel.send(embed=embed)
         except discord.Forbidden:
             await interaction.followup.send("❌ Forbidden: Cannot assign roles or change nickname.", ephemeral=True)
@@ -2730,7 +2732,7 @@ class RecruitmentCog(commands.Cog):
         elif can_reapply == 0:
             await add_timeout_record( app_data["applicant_id"], "blacklist")
             if member:
-                log_mention = f"{member.display_name} ( {member.mention} )"
+                log_mention = f"{member.display_name} ( <@{member.id}> )"
                 blacklist_role = self.resources.blacklist_role
                 if blacklist_role and blacklist_role not in member.roles:
                     try:
@@ -2752,7 +2754,7 @@ class RecruitmentCog(commands.Cog):
             expires = now + timedelta(days=can_reapply)
             await add_timeout_record( app_data["applicant_id"], "timeout", expires)
             if member:
-                log_mention = f"{member.display_name}( {member.mention} )"
+                log_mention = f"{member.display_name} ( <@{member.id}> )"
                 timeout_role = self.resources.timeout_role
                 if timeout_role and timeout_role not in member.roles:
                     try:
@@ -2927,7 +2929,7 @@ class RecruitmentCog(commands.Cog):
 
         # apply Discord role if they’re still here
         if member_obj:
-            log_mention = f"{member_obj.display_name}( {member_obj.mention} )"
+            log_mention = f"{member_obj.display_name} ( <@{member_obj.id}> )"
             timeout_role = self.resources.timeout_role
             if timeout_role and timeout_role not in member_obj.roles:
                 try:
@@ -3010,13 +3012,13 @@ class RecruitmentCog(commands.Cog):
                 await member_obj.add_roles(blacklist_role)
 
         if member_obj:
-            log_mention = f"{member_obj.display_name}( {member_obj.mention} )"
+            log_mention = f"{member_obj.display_name} ( <@{member_obj.id}> )"
             
         else:
             try:
                 # fetch_user always returns a User
                 user = await interaction.client.fetch_user(member_id)
-                log_mention = f"{user.display_name}({user.mention})"
+                log_mention = f"{user.display_name} ({user.mention})"
             except:
                 log_mention = f"{member_id} (not found in guild)"
 
@@ -3176,12 +3178,12 @@ class RecruitmentCog(commands.Cog):
         activity_channel = self.resources.activity_ch
         if activity_channel:
             embed = create_user_activity_log_embed("recruitment", "Remove Restriction", interaction.user,
-                                                f"Removed restrictions from user {member_obj.display_name}( {member_obj.mention} ).")
+                                                f"Removed restrictions from user {member_obj.display_name} ( <@{member_obj.id}> ).")
             await activity_channel.send(embed=embed)
         
         embed = discord.Embed(
             title="Restriction Removed",
-            description=f"Blacklist/timeout removed from {member_obj.display_name}( {member_obj.mention} ).",
+            description=f"Blacklist/timeout removed from {member_obj.display_name} ( <@{member_obj.id}> ).",
             colour=discord.Colour.green()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
