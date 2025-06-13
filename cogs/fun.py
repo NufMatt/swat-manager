@@ -2,11 +2,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import random
+from datetime import datetime, timedelta
 
 class ExampleCog(commands.Cog):
     """An example cog showing how to use slash commands with fun embeds."""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._last_used: dict[int, datetime] = {}
         self.achievements = [
             "breached the break-room fortress under heavy snack fire",
             "neutralized the rogue paperclip insurgency",
@@ -76,8 +78,33 @@ class ExampleCog(commands.Cog):
             "brewed a coffee strong enough to stop a raid",
         ]
 
+    async def cog_app_command_check(self, interaction: discord.Interaction) -> bool:
+        """Shared per-user cooldown: 1 hour between _any_ of these commands."""
+        user_id = interaction.user.id
+        now = datetime.utcnow()
+        last = self._last_used.get(user_id)
 
+        if last and (now - last) < timedelta(hours=1):
+            retry_after = 3600 - (now - last).total_seconds()
+            cooldown = app_commands.Cooldown(1, 3600)
+            # raise the standard cooldown exception
+            raise app_commands.CommandOnCooldown(cooldown, retry_after)
 
+        # record this execution
+        self._last_used[user_id] = now
+        return True
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        """Catch our cooldown and send a friendly message."""
+        if isinstance(error, app_commands.CommandOnCooldown):
+            mins, secs = divmod(int(error.retry_after), 60)
+            await interaction.response.send_message(
+                f"⏳ Slow down! You can use any of these commands again in {mins}m {secs}s.",
+                ephemeral=True
+            )
+        else:
+            # re-raise other errors so they bubble up
+            raise error
 
     def create_fun_embed(self, title: str, description: str, color: discord.Color) -> discord.Embed:
         """Utility function to create a fun embed."""

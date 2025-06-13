@@ -1,7 +1,7 @@
 # cogs/verification.py
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, app_commands
 import asyncio, aiohttp, time
 from datetime import datetime
 from config import *
