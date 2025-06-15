@@ -317,10 +317,10 @@ class ConfirmClaimOverrideView(discord.ui.View):
         # update the DB to set the new recruiter
         updated = await update_application_recruiter(self.thread_id, self.new_recruiter_id)
         if updated:
-            await interaction.response.send_message(
-                embed=discord.Embed(title="✅ Claim overridden", description=f"<@{self.new_recruiter_id}> is now the recruiter."),
-                ephemeral=False
+            await interaction.channel.send(
+                embed=discord.Embed(title="✅ Claim overridden", description=f"<@{self.new_recruiter_id}> is now the recruiter.")
             )
+            await interaction.response.send_message("✅ Claim successfully overridden.", ephemeral=True)
         else:
             await interaction.response.send_message("❌ Failed to override claim.", ephemeral=True)
         self.stop()
