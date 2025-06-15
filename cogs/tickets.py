@@ -333,7 +333,7 @@ class TicketCog(commands.Cog):
         else:
             return await interaction.response.send_message("❌ Could not find LOA embed.", ephemeral=True)
 
-        m = re.search(r"<t:(\d+):D>", embed.description)
+        m = re.search(r"<t:(\d+):[dD]>", embed.description)
         if not m:
             return await interaction.response.send_message("❌ Could not parse end date.", ephemeral=True)
 
