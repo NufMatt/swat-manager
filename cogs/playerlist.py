@@ -8,7 +8,6 @@ import io
 from config import *
 from cogs.helpers import log, set_stored_embed, get_stored_embed
 
-
 class PlayerListCog(commands.Cog):
     """Cog for updating an online player list embed based on external APIs,
     while logging playtime and name changes and adding leadership-only commands."""
@@ -535,8 +534,7 @@ class PlayerListCog(commands.Cog):
                                 elif TRAINEE_ROLE in details["roles"]:
                                     ptype = "trainee"
                                 elif (SWAT_ROLE_ID in details["roles"]
-                                    and details["joined_at"] > datetime.utcnow() - timedelta(days=20)):
-                                    # only show SWAT if they joined <20 days ago
+                                    and details["joined_at"] > datetime.now(pytz.UTC) - timedelta(days=20)):
                                     ptype = "SWAT"
                                 else:
                                     ptype = None
