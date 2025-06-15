@@ -1485,7 +1485,7 @@ class RecruitmentCog(commands.Cog):
                 if message.channel.id not in self.ban_history_submitted:
                     confirmation = discord.Embed(
                         title="✅ Ban History Submitted!",
-                        description="Your ban history has been received. A recruiter will review your application shortly.",
+                        description="",
                         color=discord.Color.green()
                     )
                     await message.channel.send(embed=confirmation)
