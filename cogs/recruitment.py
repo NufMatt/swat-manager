@@ -1969,8 +1969,8 @@ class RecruitmentCog(commands.Cog):
             return
 
         # Determine the role suffix based on the role type.
-        role_suffix = "Trainee Notes" if app_entry["role_type"] == "trainee" else "Cadet Notes"
-        new_thread_name = f"{new_name} - {role_suffix}"
+        role_suffix = "TRAINEE Notes" if app_entry["role_type"] == "trainee" else "CADET Notes"
+        new_thread_name = f"{new_name} | {role_suffix}"
         await interaction.channel.edit(name=new_thread_name)
 
         # Regenerate the voting embed so the new name appears correctly.

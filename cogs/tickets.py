@@ -763,7 +763,58 @@ class TicketCog(commands.Cog):
         )
         await interaction.response.send_message("✅ Group ping sent!", ephemeral=True)
 
+    @app_commands.command(
+        name="ticket_rename",
+        description="Rename a ticket thread."
+    )
+    @app_commands.describe(
+        name="The new name for this ticket thread",
+    )
+    async def ticket_add(
+        self,
+        interaction: discord.Interaction,
+        name: str = None
+    ):
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            return await interaction.response.send_message(
+                "❌ Use this inside a ticket thread.", ephemeral=True
+            )
+        if not interaction.guild or interaction.guild.id != GUILD_ID:
+            return await interaction.response.send_message(
+                "❌ This command only works in the configured guild.", ephemeral=True
+            )
+        if not await get_ticket_info(str(thread.id)):
+            return await interaction.response.send_message(
+                "❌ This thread isn’t a registered ticket.", ephemeral=True
+            )
 
+        if not interaction.client.resources.recruiter_role in interaction.user.roles and not interaction.client.resources.leadership_role in interaction.user.roles:
+                return await interaction.response.send_message(
+                   "❌ You do not have permission to rename this ticket.", ephemeral=True)
+
+        try:
+            if not name:
+                return await interaction.response.send_message(
+                    "❌ Please provide a new name for the ticket.", ephemeral=True
+                )
+            if len(name) > 100:
+                return await interaction.response.send_message(
+                    "❌ Ticket names cannot exceed 100 characters.", ephemeral=True
+                )
+            log(f"Renaming ticket {thread.id} to '{name}' by user {interaction.user.id}.")
+            await thread.edit(name=name)
+            await interaction.response.send_message(
+                f"✅ Ticket renamed to **{name}**.", ephemeral=True)
+            
+        except discord.Forbidden:
+            return await interaction.response.send_message(
+                "❌ Bot lacks permission to rename this thread.", ephemeral=True
+            )
+        except:
+            return await interaction.response.send_message(
+                "❌ An error occurred while renaming the thread.", ephemeral=True
+            )
 
     @app_commands.command(name="ticket_close", description="Close the current ticket.")
     async def ticket_close(self, interaction: discord.Interaction):
