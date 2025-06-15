@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import random
 from datetime import datetime, timedelta
+import inspect, functools
 
 class ExampleCog(commands.Cog):
     """An example cog showing how to use slash commands with fun embeds."""
@@ -78,45 +79,60 @@ class ExampleCog(commands.Cog):
             "brewed a coffee strong enough to stop a raid",
         ]
 
-    async def cog_app_command_check(self, interaction: discord.Interaction) -> bool:
-        """Shared per-user cooldown: 1 hour between _any_ of these commands."""
-        user_id = interaction.user.id
+    def _check_cooldown(self, interaction: discord.Interaction):
+        uid = interaction.user.id
         now = datetime.utcnow()
-        last = self._last_used.get(user_id)
+        last = self._last_used.get(uid)
+        if last and now - last < timedelta(hours=1):
+            retry = 3600 - (now - last).total_seconds()
+            raise app_commands.CommandOnCooldown(
+                app_commands.Cooldown(1, 3600),
+                retry
+            )
+        self._last_used[uid] = now
 
-        if last and (now - last) < timedelta(hours=1):
-            retry_after = 3600 - (now - last).total_seconds()
-            cooldown = app_commands.Cooldown(1, 3600)
-            # raise the standard cooldown exception
-            raise app_commands.CommandOnCooldown(cooldown, retry_after)
-
-        # record this execution
-        self._last_used[user_id] = now
-        return True
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        """Catch our cooldown and send a friendly message."""
         if isinstance(error, app_commands.CommandOnCooldown):
             mins, secs = divmod(int(error.retry_after), 60)
             await interaction.response.send_message(
-                f"⏳ Slow down! You can use any of these commands again in {mins}m {secs}s.",
+                f"⏳ Slow down! Try again in {mins}m {secs}s.",
                 ephemeral=True
             )
         else:
-            # re-raise other errors so they bubble up
             raise error
-
+    
     def create_fun_embed(self, title: str, description: str, color: discord.Color) -> discord.Embed:
         """Utility function to create a fun embed."""
         embed = discord.Embed(title=title, description=description, color=color)
         embed.set_footer(text="Joke — not a real command")
         return embed
 
+    def shared_cd():
+        """Decorator factory that applies our shared cooldown,
+        but preserves the original signature for app_commands."""
+        def decorator(func):
+            sig = inspect.signature(func)
+
+            @functools.wraps(func)
+            async def wrapper(*args, **kwargs):
+                # args[0] is self, args[1] is interaction
+                self, interaction = args[:2]
+                self._check_cooldown(interaction)
+                return await func(*args, **kwargs)
+
+            # restore the original signature so app_commands can see it
+            wrapper.__signature__ = sig
+            return wrapper
+
+        return decorator
+
     @app_commands.command(
         name="remove_from_leadership",
         description="Remove someone from Leadership (fun!)"
     )
     @app_commands.describe(member="Who to remove")
+    @shared_cd()
     async def remove_from_leadership(
         self,
         interaction: discord.Interaction,
@@ -134,6 +150,7 @@ class ExampleCog(commands.Cog):
         description="Remove someone from SWAT (fun!)"
     )
     @app_commands.describe(member="Who to remove")
+    @shared_cd()
     async def remove_from_swat(
         self,
         interaction: discord.Interaction,
@@ -150,6 +167,7 @@ class ExampleCog(commands.Cog):
         description="Demote someone down to Officer (fun!)"
     )
     @app_commands.describe(member="Who to demote")
+    @shared_cd()
     async def demote(
         self,
         interaction: discord.Interaction,
@@ -166,6 +184,7 @@ class ExampleCog(commands.Cog):
         description="Send someone back to Trainee status (fun!)"
     )
     @app_commands.describe(member="Who to send back")
+    @shared_cd()
     async def back_to_trainee(
         self,
         interaction: discord.Interaction,
@@ -181,6 +200,7 @@ class ExampleCog(commands.Cog):
         name="achievement",
         description="Unlock a random funny achievement!"
     )
+    @shared_cd()
     async def achievement(
         self,
         interaction: discord.Interaction

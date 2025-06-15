@@ -240,26 +240,32 @@ class ApplicationControlView(discord.ui.View):
             ephemeral=True
         )
 
-    @discord.ui.button(
-        label="Claim",
-        style=discord.ButtonStyle.primary,
-        custom_id="app_claim"
-    )
-    async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # (Existing Claim logic remains unchanged)
-        app_data = await get_application( str(interaction.channel.id))
+    @discord.ui.button(label="Claim", style=ButtonStyle.primary, custom_id="app_claim")
+    async def claim_button(self, interaction: Interaction, button: discord.ui.Button):
+        app_data = await get_application(str(interaction.channel.id))
         if not app_data:
-            await interaction.response.send_message("❌ No application data found for this thread!", ephemeral=True)
-            return
-        recruiter_role = interaction.client.resources.recruiter_role
-        if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.response.send_message("❌ Only recruiters can claim this application!", ephemeral=True)
-            return
-        updated = await update_application_recruiter( str(interaction.channel.id), str(interaction.user.id))
-        if updated:
-            await interaction.response.send_message(embed=discord.Embed(title=f"✅ {interaction.user.name} has claimed this application.", colour=0x23ef56))
-        else:
-            await interaction.response.send_message("❌ Failed to update recruiter in DB!", ephemeral=True)
+            return await interaction.response.send_message("❌ No application data found!", ephemeral=True)
+
+        if not interaction.client.resources.recruiter_role in interaction.user.roles:
+            return await interaction.response.send_message("❌ Only recruiters can claim.", ephemeral=True)
+
+        current = app_data.get("recruiter_id")
+        if current:
+            # Already claimed: ask for confirmation to override
+            embed = discord.Embed(title="⚠️ This application is already claimed!",
+                      description=f"Claimed by:  <@{current}>\n\n**Do you want to override the claim?**",
+                      colour=discord.Color.yellow())
+            return await interaction.response.send_message(embed=embed,
+                view=ConfirmClaimOverrideView(str(interaction.channel.id), str(interaction.user.id)),
+                ephemeral=True
+            )
+
+        # No existing claim → just claim it
+        await update_application_recruiter(str(interaction.channel.id), str(interaction.user.id))
+        await interaction.response.send_message(
+            embed=discord.Embed(title=f"✅ {interaction.user.display_name} has claimed this application."),
+            ephemeral=False
+        )
 
     @discord.ui.button(
         label="History",
@@ -281,7 +287,7 @@ class ApplicationControlView(discord.ui.View):
         user_id_str = app_data["applicant_id"]
         # Instead of calling the command directly, we use its callback.
         await cog.app_history.callback(cog, interaction, None, user_id_str)
-
+    
 class ConfirmAcceptView(discord.ui.View):
     def __init__(self, original_interaction: discord.Interaction, cog: commands.Cog):
         super().__init__(timeout=60)
@@ -300,6 +306,29 @@ class ConfirmAcceptView(discord.ui.View):
         await interaction.response.send_message("❌ Acceptance cancelled.", ephemeral=True)
         self.stop()
 
+class ConfirmClaimOverrideView(discord.ui.View):
+    def __init__(self, thread_id: str, new_recruiter_id: str):
+        super().__init__(timeout=60)
+        self.thread_id = thread_id
+        self.new_recruiter_id = new_recruiter_id
+
+    @discord.ui.button(label="Yes, override", style=ButtonStyle.danger)
+    async def confirm(self, interaction: Interaction, btn: discord.ui.Button):
+        # update the DB to set the new recruiter
+        updated = await update_application_recruiter(self.thread_id, self.new_recruiter_id)
+        if updated:
+            await interaction.response.send_message(
+                embed=discord.Embed(title="✅ Claim overridden", description=f"<@{self.new_recruiter_id}> is now the recruiter."),
+                ephemeral=False
+            )
+        else:
+            await interaction.response.send_message("❌ Failed to override claim.", ephemeral=True)
+        self.stop()
+
+    @discord.ui.button(label="No, cancel", style=ButtonStyle.secondary)
+    async def cancel(self, interaction: Interaction, btn: discord.ui.Button):
+        await interaction.response.send_message("❌ Claim cancelled.", ephemeral=True)
+        self.stop()
 
 class CloseThreadView(discord.ui.View):
     def __init__(self):
@@ -2839,27 +2868,25 @@ class RecruitmentCog(commands.Cog):
     @app_commands.command(name="app_claim", description="Claim this application.")
     @handle_interaction_errors
     async def app_claim_command(self, interaction: discord.Interaction):
-        # Retrieve application data for the current thread.
-        app_data = await get_application( str(interaction.channel.id))
+        app_data = await get_application(str(interaction.channel.id))
         if not app_data:
-            await interaction.response.send_message("❌ No application data found for this thread!", ephemeral=True)
-            return
+            return await interaction.response.send_message("❌ No application data found!", ephemeral=True)
 
-        # Check if the user has the Recruiter role.
-        recruiter_role = self.bot.resources.recruiter_role
-        if not recruiter_role or recruiter_role not in interaction.user.roles:
-            await interaction.response.send_message("❌ Only recruiters can claim this application!", ephemeral=True)
-            return
+        if not interaction.client.resources.recruiter_role in interaction.user.roles:
+            return await interaction.response.send_message("❌ Only recruiters can claim.", ephemeral=True)
 
-        # **New Check:** Ensure the application is not already claimed.
-        if app_data.get("recruiter_id"):
-            await interaction.response.send_message(
-                "❌ This application has already been claimed!",
+        current = app_data.get("recruiter_id")
+        if current:
+            # Already claimed: ask for confirmation to override
+            embed = discord.Embed(title="⚠️ This application is already claimed!",
+                      description=f"Claimed by:  <@{current}>\n\n**Do you want to override the claim?**",
+                      colour=discord.Color.yellow())
+            return await interaction.response.send_message(embed=embed,
+                view=ConfirmClaimOverrideView(str(interaction.channel.id), str(interaction.user.id)),
                 ephemeral=True
             )
-            return
 
-        # If unclaimed, update the DB to mark the current user as the recruiter.
+        # No existing claim → just claim it
         updated = await update_application_recruiter( str(interaction.channel.id), str(interaction.user.id))
         if updated:
             await interaction.response.send_message(embed=discord.Embed(title=f"✅ {interaction.user.name} has claimed this application.", colour=0x23ef56))
