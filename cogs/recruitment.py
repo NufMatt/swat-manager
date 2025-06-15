@@ -1466,32 +1466,31 @@ class RecruitmentCog(commands.Cog):
 
         # Check each attachment for an image and update DB accordingly
         for att in message.attachments:
-            if not app_data.get("recruiter_id"):
-                is_image = False
-                if att.content_type and att.content_type.startswith("image/"):
-                    is_image = True
-                elif att.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                    is_image = True
-                if is_image:
-                    try:
-                        async with aiosqlite.connect(DATABASE_FILE) as db:
-                            await db.execute(
-                                "UPDATE application_threads SET ban_history_sent = 1 WHERE thread_id = ?",
-                                (message.channel.id,)
-                            )
-                            await db.commit()
-                    except Exception as e:
-                        log(f"DB update error in on_message for thread {message.channel.id}: {e}", level="error")
-                    
-                    if message.channel.id not in self.ban_history_submitted:
-                        confirmation = discord.Embed(
-                            title="✅ Ban History Submitted!",
-                            description="Your ban history has been received. A recruiter will review your application shortly.",
-                            color=discord.Color.green()
+            is_image = False
+            if att.content_type and att.content_type.startswith("image/"):
+                is_image = True
+            elif att.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                is_image = True
+            if is_image:
+                try:
+                    async with aiosqlite.connect(DATABASE_FILE) as db:
+                        await db.execute(
+                            "UPDATE application_threads SET ban_history_sent = 1 WHERE thread_id = ?",
+                            (message.channel.id,)
                         )
-                        await message.channel.send(embed=confirmation)
-                        self.ban_history_submitted.add(message.channel.id)
-                    break
+                        await db.commit()
+                except Exception as e:
+                    log(f"DB update error in on_message for thread {message.channel.id}: {e}", level="error")
+                
+                if message.channel.id not in self.ban_history_submitted:
+                    confirmation = discord.Embed(
+                        title="✅ Ban History Submitted!",
+                        description="Your ban history has been received. A recruiter will review your application shortly.",
+                        color=discord.Color.green()
+                    )
+                    await message.channel.send(embed=confirmation)
+                    self.ban_history_submitted.add(message.channel.id)
+                break
 
 
     @commands.Cog.listener()
