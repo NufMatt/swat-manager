@@ -250,7 +250,14 @@ class PlayerListCog(commands.Cog):
         if not guild:
             log(f"Bot not in guild with ID {GUILD_ID}.", level="error")
             return
-        dc_members = {m.display_name: {"id": m.id, "roles": [r.id for r in m.roles]} for m in guild.members}
+        dc_members = {
+            m.display_name: {
+                "id": m.id,
+                "roles": [r.id for r in m.roles],
+                "joined_at": m.joined_at
+            }
+            for m in guild.members
+        }
         self.discord_cache.update({"timestamp": now, "members": dc_members})
 
     def time_convert(self, time_string):
@@ -527,7 +534,9 @@ class PlayerListCog(commands.Cog):
                                     ptype = "cadet"
                                 elif TRAINEE_ROLE in details["roles"]:
                                     ptype = "trainee"
-                                elif SWAT_ROLE_ID in details["roles"]:
+                                elif (SWAT_ROLE_ID in details["roles"]
+                                    and details["joined_at"] > datetime.utcnow() - timedelta(days=20)):
+                                    # only show SWAT if they joined <20 days ago
                                     ptype = "SWAT"
                                 else:
                                     ptype = None
