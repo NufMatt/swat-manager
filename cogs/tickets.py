@@ -45,9 +45,13 @@ class CloseThreadView(discord.ui.View):
         else:
             closing_role = interaction.client.resources.leadership_role
 
-        if closing_role not in interaction.user.roles and interaction.user.id != int(ticket_data[1]):
-            return await interaction.response.send_message("❌ You do not have permission to close this ticket.", ephemeral=True)
-
+        # for internal tickets (ticket_type == "other"), allow any thread member to close
+        if ticket_data[3] != "other":
+            if closing_role not in interaction.user.roles and interaction.user.id != int(ticket_data[1]):
+                return await interaction.response.send_message(
+                    "❌ You do not have permission to close this ticket.",
+                    ephemeral=True
+                )
         try:
             await remove_ticket(str(thread.id))
             embed = discord.Embed(
@@ -770,7 +774,7 @@ class TicketCog(commands.Cog):
     @app_commands.describe(
         name="The new name for this ticket thread",
     )
-    async def ticket_add(
+    async def ticket_rename(
         self,
         interaction: discord.Interaction,
         name: str = None
@@ -841,9 +845,13 @@ class TicketCog(commands.Cog):
         else:
             closing_role = interaction.client.resources.leadership_role
 
-        if closing_role not in interaction.user.roles and interaction.user.id != int(ticket_data[1]):
-            return await interaction.response.send_message("❌ You do not have permission to close this ticket.", ephemeral=True)
-
+        # for internal tickets (ticket_type == "other"), allow any thread member to close
+        if ticket_data[3] != "other":
+            if closing_role not in interaction.user.roles and interaction.user.id != int(ticket_data[1]):
+                return await interaction.response.send_message(
+                    "❌ You do not have permission to close this ticket.",
+                    ephemeral=True
+                )
         try:
             await remove_ticket(str(thread.id))
             embed = discord.Embed(
@@ -879,9 +887,8 @@ class TicketCog(commands.Cog):
                 "❌ This thread isn’t a registered ticket.", ephemeral=True
             )
 
-        opener_id = ticket_data[1]
         leadership = interaction.client.resources.leadership_role
-        if interaction.user.id != int(opener_id) and leadership not in interaction.user.roles:
+        if leadership not in interaction.user.roles:
             return await interaction.response.send_message(
                 "❌ You don’t have permission to mark this done.", ephemeral=True
             )
