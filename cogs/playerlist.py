@@ -227,9 +227,10 @@ class PlayerListCog(commands.Cog):
 
 
     async def fetch_fivem(self, region: str):
+        """Fetch FiveM server info but never return None (empty dict on failure)."""
         url = API_URLS_FIVEM.get(region)
         if not url:
-            return None
+            return {}
 
         try:
             async with self.http.get(url, ssl=False) as resp:
@@ -238,7 +239,7 @@ class PlayerListCog(commands.Cog):
                 return json.loads(text)
         except Exception as e:
             log(f"Error fetching FiveM data for {region}: {e}", level="warning")
-            return None
+            return {}
 
 
     async def update_discord_cache(self):
@@ -283,24 +284,36 @@ class PlayerListCog(commands.Cog):
     async def create_embed(self, region, matching_players, queue_data, server_info):
         offline = False
         embed_color = 0x28ef05
-        if matching_players is None or server_info is None:
+
+        # If we failed to get the player list, mark offline immediately
+        if matching_players is None:
             offline = True
             embed_color = 0xf40006
-        if queue_data and region in queue_data and not offline:
+
+        # Never let server_info be None — fall back to empty dict
+        if server_info is None:
+            server_info = {}
+
+        # Now check the heartbeat timestamp from queue_data
+        if not offline and queue_data and region in queue_data:
             try:
-                last_heartbeat = datetime.fromisoformat(queue_data[region]["LastHeartbeatDateTime"].replace("Z", "+00:00"))
+                last_heartbeat = datetime.fromisoformat(
+                    queue_data[region]["LastHeartbeatDateTime"].replace("Z", "+00:00")
+                )
                 if datetime.now(pytz.UTC) - last_heartbeat > timedelta(minutes=1):
                     offline = True
                     embed_color = 0xf40006
             except Exception as e:
                 log(f"Error parsing last heartbeat for region {region}: {e}", level="error")
-        else:
-            offline = True
-            embed_color = 0xf40006
+                offline = True
+                embed_color = 0xf40006
+
+        # Build the embed with the final offline/embed_color values…
         flags = {"EU": "🇪🇺 ", "NA": "🇺🇸 ", "SEA": "🇸🇬 "}
         region_name = region[:-1] if region[-1].isdigit() else region
         title = f"{flags.get(region_name, '')}{region}"
         embed = discord.Embed(title=title, colour=embed_color)
+
         if offline:
             embed.add_field(name="Server or API down?", value="No Data for this server!", inline=False)
             embed.add_field(name="🎮Players:", value="```no data```", inline=True)
