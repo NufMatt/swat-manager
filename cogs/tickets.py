@@ -887,8 +887,16 @@ class TicketCog(commands.Cog):
                 "❌ This thread isn’t a registered ticket.", ephemeral=True
             )
 
+        # Neue Rechte-Logik:
+        ticket_type = ticket_data[3]  # "other", "recruiters", "botdeveloper", usw.
         leadership = interaction.client.resources.leadership_role
-        if leadership not in interaction.user.roles:
+        recruiter  = interaction.client.resources.recruiter_role
+
+        # Leadership darf immer, Recruiter nur für interne ("other") oder Recruiter-Tickets
+        if not (
+            leadership in interaction.user.roles
+            or (recruiter in interaction.user.roles and ticket_type in ("other", "recruiters"))
+        ):
             return await interaction.response.send_message(
                 "❌ You don’t have permission to mark this done.", ephemeral=True
             )
@@ -896,13 +904,17 @@ class TicketCog(commands.Cog):
         # schedule lock 24 h from now
         done_iso = datetime.utcnow().isoformat()
         await update_ticket_done(str(thread.id), done_iso)
-        embed = discord.Embed(title="✅ Ticket marked as done!",
-                            description="**If you don’t need any more help,\nclick the “Close Ticket” button below to close it immediately.** \n\n 🔒This ticket will auto-lock in 24 hours.",
-                            colour=0x00d500)
+        embed = discord.Embed(
+            title="✅ Ticket marked as done!",
+            description=(
+                "**If you don’t need any more help,\n"
+                "click the “Close Ticket” button below to close it immediately.**\n\n"
+                "🔒This ticket will auto-lock in 24 hours."
+            ),
+            colour=0x00d500
+        )
         embed.set_footer(text="⌨️ Sending a message here will cancel the automatic closing.")
         await interaction.response.send_message(embed=embed, view=CloseThreadView())
-
-
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
