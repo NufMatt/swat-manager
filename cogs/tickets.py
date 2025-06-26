@@ -763,7 +763,7 @@ class TicketCog(commands.Cog):
                 "❌ Role not found on this server.", ephemeral=True
             )
         await thread.send(
-            f"**{interaction.user.display_name}** added {role.mention} to this ticket."
+            f"**{interaction.user.display_name}** added {role.mention} to this ticket.", silent=True
         )
         await interaction.response.send_message("✅ Group ping sent!", ephemeral=True)
 
